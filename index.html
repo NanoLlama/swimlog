@@ -1,0 +1,662 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SwimLog">
+<title>SwimLog</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,500;0,9..40,700;1,9..40,300&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0a1628;
+    --bg-card: #111d33;
+    --bg-input: #162240;
+    --bg-elevated: #1a2a4a;
+    --border: #243556;
+    --border-focus: #3b82f6;
+    --text: #e8edf5;
+    --text-muted: #7a8ba8;
+    --text-dim: #4a5f80;
+    --accent: #3b82f6;
+    --accent-glow: rgba(59, 130, 246, 0.15);
+    --accent-soft: #2563eb;
+    --green: #22c55e;
+    --green-soft: rgba(34, 197, 94, 0.12);
+    --amber: #f59e0b;
+    --amber-soft: rgba(245, 158, 11, 0.12);
+    --red: #ef4444;
+    --red-soft: rgba(239, 68, 68, 0.12);
+    --cyan: #06b6d4;
+    --cyan-soft: rgba(6, 182, 212, 0.1);
+    --purple: #a855f7;
+    --purple-soft: rgba(168, 85, 247, 0.12);
+    --radius: 14px;
+    --radius-sm: 10px;
+    --safe-top: env(safe-area-inset-top, 20px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: 'DM Sans', -apple-system, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100dvh; overflow-x: hidden; -webkit-font-smoothing: antialiased;
+  }
+  .header {
+    position: sticky; top: 0; z-index: 100;
+    padding: calc(var(--safe-top) + 8px) 20px 12px;
+    background: linear-gradient(to bottom, var(--bg) 60%, transparent);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+  }
+  .header-row { display: flex; align-items: center; justify-content: space-between; }
+  .logo {
+    font-size: 22px; font-weight: 700; letter-spacing: -0.5px;
+    background: linear-gradient(135deg, #60a5fa, #06b6d4);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .logo span { font-weight: 300; opacity: 0.7; }
+  .icon-btn {
+    width: 38px; height: 38px; border-radius: 10px;
+    background: var(--bg-card); border: 1px solid var(--border);
+    color: var(--text-muted); font-size: 17px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .icon-btn:active { background: var(--bg-elevated); transform: scale(0.93); }
+  .nav { display: flex; gap: 4px; padding: 6px 20px 0; margin-bottom: 4px; }
+  .nav-tab {
+    flex: 1; padding: 10px 0; text-align: center;
+    font-size: 13px; font-weight: 500; color: var(--text-dim);
+    background: none; border: none; border-bottom: 2px solid transparent;
+    cursor: pointer; transition: all 0.2s;
+  }
+  .nav-tab.active { color: var(--accent); border-color: var(--accent); }
+  .view { display: none; padding: 12px 16px calc(var(--safe-bottom) + 90px); }
+  .view.active { display: block; animation: fadeUp 0.25s ease; }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 12px; }
+  .card-label { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-dim); margin-bottom: 10px; }
+  .field { margin-bottom: 14px; }
+  .field-label { font-size: 12px; font-weight: 500; color: var(--text-muted); margin-bottom: 5px; display: block; }
+  input[type="text"], input[type="number"], input[type="date"], input[type="time"], select, textarea {
+    width: 100%; padding: 11px 14px; font-size: 16px; font-family: 'DM Sans', sans-serif;
+    background: var(--bg-input); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); outline: none; transition: border-color 0.2s; -webkit-appearance: none;
+  }
+  input:focus, select:focus, textarea:focus { border-color: var(--border-focus); }
+  textarea { resize: vertical; min-height: 60px; font-size: 14px; }
+  select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%237a8ba8'%3E%3Cpath d='M6 8L1 3h10z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 36px; }
+  .row { display: flex; gap: 10px; }
+  .row > .field { flex: 1; }
+  .type-toggle { display: flex; gap: 0; background: var(--bg-input); border: 1px solid var(--border); border-radius: var(--radius); padding: 4px; margin-bottom: 14px; }
+  .type-btn {
+    flex: 1; padding: 11px 8px; text-align: center; font-size: 14px; font-weight: 600;
+    font-family: 'DM Sans', sans-serif; border: none; border-radius: var(--radius-sm);
+    cursor: pointer; transition: all 0.2s; color: var(--text-dim); background: transparent;
+  }
+  .type-btn.active-lap { background: linear-gradient(135deg, var(--accent-glow), rgba(6,182,212,0.12)); color: var(--accent); box-shadow: 0 2px 8px rgba(59,130,246,0.15); }
+  .type-btn.active-drill { background: linear-gradient(135deg, var(--purple-soft), rgba(168,85,247,0.18)); color: var(--purple); box-shadow: 0 2px 8px rgba(168,85,247,0.15); }
+  .type-btn .type-icon { font-size: 16px; margin-right: 4px; }
+  .form-section { display: none; }
+  .form-section.active { display: block; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip {
+    padding: 7px 14px; font-size: 13px; font-weight: 500; border-radius: 20px;
+    border: 1px solid var(--border); background: var(--bg-input); color: var(--text-muted);
+    cursor: pointer; transition: all 0.2s; user-select: none;
+  }
+  .chip.selected { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+  .chip.selected-purple { background: var(--purple-soft); border-color: var(--purple); color: var(--purple); }
+  .chip:active { transform: scale(0.95); }
+  .rpe-track { position: relative; height: 44px; display: flex; align-items: center; gap: 2px; }
+  .rpe-seg { flex: 1; height: 32px; border-radius: 6px; cursor: pointer; transition: all 0.15s; opacity: 0.25; }
+  .rpe-seg.filled { opacity: 1; }
+  .rpe-seg:active { transform: scaleY(1.1); }
+  .rpe-val { font-family: 'JetBrains Mono', monospace; font-size: 20px; font-weight: 600; color: var(--text); min-width: 36px; text-align: right; margin-left: 8px; }
+  .rpe-labels { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-dim); margin-top: 2px; padding: 0 2px; }
+  .quality-track { display: flex; gap: 6px; }
+  .quality-star {
+    width: 40px; height: 40px; border-radius: 10px; background: var(--bg-input);
+    border: 1px solid var(--border); font-size: 20px;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer; transition: all 0.15s; opacity: 0.4;
+  }
+  .quality-star.filled { opacity: 1; background: var(--purple-soft); border-color: var(--purple); }
+  .quality-star:active { transform: scale(0.9); }
+  .btn-primary {
+    width: 100%; padding: 15px; font-size: 16px; font-weight: 600; font-family: 'DM Sans', sans-serif;
+    background: linear-gradient(135deg, var(--accent), var(--accent-soft)); color: #fff; border: none;
+    border-radius: var(--radius); cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 20px rgba(59,130,246,0.3);
+  }
+  .btn-primary.drill-mode { background: linear-gradient(135deg, var(--purple), #7c3aed); box-shadow: 0 4px 20px rgba(168,85,247,0.3); }
+  .btn-primary:active { transform: scale(0.97); opacity: 0.9; }
+  .btn-secondary {
+    width: 100%; padding: 13px; font-size: 14px; font-weight: 500; font-family: 'DM Sans', sans-serif;
+    background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border);
+    border-radius: var(--radius); cursor: pointer; transition: all 0.2s;
+  }
+  .btn-secondary:active { background: var(--bg-input); }
+  .btn-danger { background: var(--red-soft); color: var(--red); border-color: rgba(239,68,68,0.2); }
+  .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+  .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 600; margin-bottom: 2px; }
+  .stat-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-card.accent .stat-value { color: var(--accent); }
+  .stat-card.green .stat-value { color: var(--green); }
+  .stat-card.cyan .stat-value { color: var(--cyan); }
+  .stat-card.amber .stat-value { color: var(--amber); }
+  .stat-card.purple .stat-value { color: var(--purple); }
+  .session-item {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 14px; margin-bottom: 8px; cursor: pointer; transition: all 0.15s;
+  }
+  .session-item:active { background: var(--bg-elevated); }
+  .session-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .session-date { font-size: 14px; font-weight: 500; }
+  .session-dist { font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 600; color: var(--accent); }
+  .session-tags { display: flex; gap: 6px; flex-wrap: wrap; }
+  .session-tag { font-size: 11px; padding: 3px 8px; border-radius: 6px; background: var(--bg-elevated); color: var(--text-muted); }
+  .tag-lap { background: var(--cyan-soft); color: var(--cyan); }
+  .tag-drill { background: var(--purple-soft); color: var(--purple); }
+  .tag-rpe-low { background: var(--green-soft); color: var(--green); }
+  .tag-rpe-mid { background: var(--amber-soft); color: var(--amber); }
+  .tag-rpe-high { background: var(--red-soft); color: var(--red); }
+  .detail-header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+  .back-btn {
+    width: 36px; height: 36px; border-radius: 10px; background: var(--bg-card);
+    border: 1px solid var(--border); color: var(--text-muted); font-size: 18px;
+    display: flex; align-items: center; justify-content: center; cursor: pointer;
+  }
+  .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 14px; }
+  .detail-row .dl { color: var(--text-muted); }
+  .detail-row .dv { font-weight: 500; text-align: right; max-width: 60%; }
+  .detail-notes { margin-top: 12px; padding: 12px; background: var(--bg-input); border-radius: var(--radius-sm); font-size: 13px; color: var(--text-muted); line-height: 1.5; font-style: italic; }
+  .set-list { margin-bottom: 10px; }
+  .set-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg-input); border-radius: var(--radius-sm); margin-bottom: 6px; font-size: 13px; }
+  .set-row .set-num { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-dim); min-width: 20px; }
+  .set-row .set-desc { flex: 1; }
+  .set-row .set-remove { width: 24px; height: 24px; border-radius: 6px; background: var(--red-soft); border: none; color: var(--red); font-size: 14px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .add-set-row { display: flex; gap: 6px; }
+  .add-set-row input, .add-set-row select { font-size: 13px; padding: 8px 10px; }
+  .add-set-btn { padding: 8px 14px; border-radius: var(--radius-sm); font-size: 13px; font-weight: 600; font-family: 'DM Sans', sans-serif; cursor: pointer; white-space: nowrap; border: none; }
+  .add-set-btn.lap { background: var(--accent-glow); color: var(--accent); border: 1px solid rgba(59,130,246,0.3); }
+  .add-set-btn.drill { background: var(--purple-soft); color: var(--purple); border: 1px solid rgba(168,85,247,0.3); }
+  .filter-row { display: flex; gap: 6px; margin-bottom: 12px; }
+  .filter-pill { padding: 7px 14px; font-size: 12px; font-weight: 500; border-radius: 20px; border: 1px solid var(--border); background: var(--bg-input); color: var(--text-muted); cursor: pointer; transition: all 0.2s; }
+  .filter-pill.active { background: var(--accent-glow); border-color: var(--accent); color: var(--accent); }
+  .export-option { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; cursor: pointer; transition: all 0.15s; }
+  .export-option:active { background: var(--bg-elevated); }
+  .export-icon { font-size: 24px; width: 40px; text-align: center; }
+  .export-info { flex: 1; }
+  .export-title { font-size: 14px; font-weight: 500; }
+  .export-desc { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+  .empty { text-align: center; padding: 40px 20px; color: var(--text-dim); font-size: 14px; }
+  .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.5; }
+  .toast { position: fixed; bottom: calc(var(--safe-bottom) + 20px); left: 50%; transform: translateX(-50%) translateY(80px); padding: 12px 24px; border-radius: 12px; background: var(--green); color: #fff; font-size: 14px; font-weight: 500; opacity: 0; transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1); z-index: 999; white-space: nowrap; box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .modal-overlay { display: none; position: fixed; inset: 0; z-index: 200; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); align-items: flex-end; justify-content: center; }
+  .modal-overlay.show { display: flex; }
+  .modal { width: 100%; max-width: 500px; padding: 20px; padding-bottom: calc(var(--safe-bottom) + 20px); background: var(--bg-card); border-radius: 20px 20px 0 0; border: 1px solid var(--border); border-bottom: none; animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .modal h3 { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
+  .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+  .modal-actions button { flex: 1; }
+  ::-webkit-scrollbar { width: 0; }
+</style>
+</head>
+<body>
+
+<div class="header"><div class="header-row">
+  <div class="logo">Swim<span>Log</span></div>
+  <div><button class="icon-btn" onclick="showExport()" title="Export">&#8681;</button></div>
+</div></div>
+
+<div class="nav">
+  <button class="nav-tab active" data-view="log" onclick="switchView('log')">Log</button>
+  <button class="nav-tab" data-view="history" onclick="switchView('history')">History</button>
+  <button class="nav-tab" data-view="stats" onclick="switchView('stats')">Stats</button>
+</div>
+
+<!-- ═══ LOG VIEW ═══ -->
+<div id="view-log" class="view active">
+  <div class="type-toggle">
+    <button class="type-btn active-lap" id="toggle-lap" onclick="setSessionType('lap')"><span class="type-icon">&#127946;</span> Lap Swim</button>
+    <button class="type-btn" id="toggle-drill" onclick="setSessionType('drill')"><span class="type-icon">&#128736;</span> Drill Practice</button>
+  </div>
+
+  <div class="card">
+    <div class="card-label">Session Info</div>
+    <div class="row">
+      <div class="field"><label class="field-label">Date</label><input type="date" id="f-date"></div>
+      <div class="field"><label class="field-label">Time</label><input type="time" id="f-time"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label class="field-label">Pool Length</label>
+        <select id="f-pool"><option value="25" data-unit="yd">25 yd</option><option value="25" data-unit="m">25 m</option></select>
+      </div>
+      <div class="field"><label class="field-label">Duration (min)</label><input type="number" id="f-duration" placeholder="30" inputmode="numeric"></div>
+    </div>
+  </div>
+
+  <!-- LAP FORM -->
+  <div class="form-section active" id="form-lap">
+    <div class="card">
+      <div class="card-label">Distance</div>
+      <div class="row">
+        <div class="field"><label class="field-label">Total Lengths</label><input type="number" id="lap-lengths" placeholder="0" inputmode="numeric"></div>
+        <div class="field"><label class="field-label">Total Distance</label><input type="text" id="lap-dist" readonly style="color:var(--accent);background:var(--bg-card);"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">Sets (optional)</div>
+      <div class="set-list" id="lap-set-list"></div>
+      <div class="add-set-row">
+        <input type="number" id="lap-set-reps" placeholder="4" style="flex:0.6;" inputmode="numeric">
+        <select id="lap-set-dist" style="flex:0.7;"><option value="25">&times; 25</option><option value="50">&times; 50</option><option value="100">&times; 100</option><option value="200">&times; 200</option></select>
+        <select id="lap-set-type" style="flex:1;"><option>Freestyle</option><option>Backstroke</option><option>Breaststroke</option><option>Kick</option><option>Pull</option><option>IM</option><option>Warm-up</option><option>Cool-down</option></select>
+        <button class="add-set-btn lap" onclick="addLapSet()">+</button>
+      </div>
+    </div>
+    <div class="card"><div class="card-label">Breathing Pattern</div>
+      <div class="chips" id="lap-breathing-chips">
+        <div class="chip" data-val="Every 2">Every 2</div><div class="chip" data-val="Every 3">Every 3</div>
+        <div class="chip" data-val="Bilateral">Bilateral</div><div class="chip" data-val="Inconsistent">Inconsistent</div>
+        <div class="chip" data-val="Struggled">Struggled</div>
+      </div>
+    </div>
+    <div class="card"><div class="card-label">Effort (RPE)</div>
+      <div class="rpe-track" id="lap-rpe-track"></div>
+      <div class="rpe-labels"><span>Easy</span><span>Moderate</span><span>Hard</span><span>Max</span></div>
+    </div>
+    <div class="card"><div class="card-label">Stroke Metrics</div>
+      <div class="row">
+        <div class="field"><label class="field-label">Avg strokes / 25</label><input type="number" id="lap-spl" placeholder="—" inputmode="numeric"></div>
+        <div class="field"><label class="field-label">Rest between sets (sec)</label><input type="number" id="lap-rest" placeholder="15" inputmode="numeric"></div>
+      </div>
+    </div>
+    <div class="card"><div class="card-label">How It Felt</div>
+      <div class="field"><label class="field-label">Mood / energy before</label>
+        <div class="chips" id="lap-mood-chips">
+          <div class="chip" data-val="Great">&#128170; Great</div><div class="chip" data-val="OK">&#128528; OK</div>
+          <div class="chip" data-val="Tired">&#128564; Tired</div><div class="chip" data-val="Low">&#128546; Low</div>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px;"><label class="field-label">Notes</label>
+        <textarea id="lap-notes" rows="3" placeholder="What went well? Pacing observations?"></textarea>
+      </div>
+    </div>
+    <button class="btn-primary" onclick="saveLapSession()">Save Lap Session</button>
+  </div>
+
+  <!-- DRILL FORM -->
+  <div class="form-section" id="form-drill">
+    <div class="card">
+      <div class="card-label">Distance (total)</div>
+      <div class="row">
+        <div class="field"><label class="field-label">Total Lengths</label><input type="number" id="drill-lengths" placeholder="0" inputmode="numeric"></div>
+        <div class="field"><label class="field-label">Total Distance</label><input type="text" id="drill-dist" readonly style="color:var(--purple);background:var(--bg-card);"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label">Drills Performed</div>
+      <div class="set-list" id="drill-set-list"></div>
+      <div class="add-set-row">
+        <input type="number" id="drill-set-reps" placeholder="4" style="flex:0.5;" inputmode="numeric">
+        <select id="drill-set-dist" style="flex:0.6;"><option value="25">&times; 25</option><option value="50">&times; 50</option></select>
+        <select id="drill-set-type" style="flex:1.2;">
+          <option>Catch-up</option><option>Fingertip drag</option><option>Side kick</option>
+          <option>6-kick switch</option><option>Fist drill</option><option>Single-arm</option>
+          <option>Zipper</option><option>Kickboard</option><option>Streamline kick</option>
+          <option>Vertical kick</option><option>Breathing drill</option><option>Sculling</option><option>Other</option>
+        </select>
+        <button class="add-set-btn drill" onclick="addDrillSet()">+</button>
+      </div>
+    </div>
+    <div class="card"><div class="card-label">Technique Focus</div>
+      <div class="chips multi" id="drill-focus-chips">
+        <div class="chip" data-val="Head position">Head position</div><div class="chip" data-val="Catch/pull">Catch / pull</div>
+        <div class="chip" data-val="High elbow">High elbow</div><div class="chip" data-val="Kick form">Kick form</div>
+        <div class="chip" data-val="Rotation">Rotation</div><div class="chip" data-val="Breathing">Breathing</div>
+        <div class="chip" data-val="Streamline">Streamline</div><div class="chip" data-val="Relaxation">Relaxation</div>
+      </div>
+    </div>
+    <div class="card"><div class="card-label">Breathing During Drills</div>
+      <div class="chips" id="drill-breathing-chips">
+        <div class="chip" data-val="Controlled">Controlled</div><div class="chip" data-val="Improving">Improving</div>
+        <div class="chip" data-val="Inconsistent">Inconsistent</div><div class="chip" data-val="Struggled">Struggled</div>
+      </div>
+    </div>
+    <div class="card"><div class="card-label">Execution Quality</div>
+      <div class="quality-track" id="quality-track"></div>
+      <div class="rpe-labels" style="margin-top:6px;"><span>Sloppy</span><span></span><span></span><span></span><span>Dialed in</span></div>
+    </div>
+    <div class="card"><div class="card-label">Effort (RPE)</div>
+      <div class="rpe-track" id="drill-rpe-track"></div>
+      <div class="rpe-labels"><span>Easy</span><span>Moderate</span><span>Hard</span><span>Max</span></div>
+    </div>
+    <div class="card"><div class="card-label">Observations</div>
+      <div class="field"><label class="field-label">Mood / energy before</label>
+        <div class="chips" id="drill-mood-chips">
+          <div class="chip" data-val="Great">&#128170; Great</div><div class="chip" data-val="OK">&#128528; OK</div>
+          <div class="chip" data-val="Tired">&#128564; Tired</div><div class="chip" data-val="Low">&#128546; Low</div>
+        </div>
+      </div>
+      <div class="field" style="margin-top:12px;"><label class="field-label">Notes / breakthroughs</label>
+        <textarea id="drill-notes" rows="3" placeholder="What clicked? What still feels off? Any breakthroughs?"></textarea>
+      </div>
+    </div>
+    <button class="btn-primary drill-mode" onclick="saveDrillSession()">Save Drill Session</button>
+  </div>
+</div>
+
+<!-- ═══ HISTORY ═══ -->
+<div id="view-history" class="view">
+  <div class="filter-row">
+    <button class="filter-pill active" data-filter="all" onclick="setFilter('all')">All</button>
+    <button class="filter-pill" data-filter="lap" onclick="setFilter('lap')">Lap Swim</button>
+    <button class="filter-pill" data-filter="drill" onclick="setFilter('drill')">Drill</button>
+  </div>
+  <div id="history-list"></div>
+</div>
+
+<!-- ═══ STATS ═══ -->
+<div id="view-stats" class="view"><div id="stats-content"></div></div>
+
+<!-- ═══ DETAIL ═══ -->
+<div id="view-detail" class="view"><div id="detail-content"></div></div>
+
+<!-- EXPORT MODAL -->
+<div class="modal-overlay" id="export-modal"><div class="modal">
+  <h3>Export Data</h3>
+  <div class="export-option" onclick="exportCSV()"><div class="export-icon">&#128196;</div><div class="export-info"><div class="export-title">CSV Spreadsheet</div><div class="export-desc">One row per session. Open in Excel, Sheets, etc.</div></div></div>
+  <div class="export-option" onclick="exportJSON()"><div class="export-icon">&#128230;</div><div class="export-info"><div class="export-title">JSON (Full Detail)</div><div class="export-desc">Complete data including sets. Best for uploading to Claude.</div></div></div>
+  <div class="export-option" onclick="exportClaudePrompt()"><div class="export-icon">&#9889;</div><div class="export-info"><div class="export-title">Claude Analysis Prompt</div><div class="export-desc">JSON + pre-written prompt. Paste directly into Claude.</div></div></div>
+  <button class="btn-secondary" onclick="closeExport()" style="margin-top:12px;">Cancel</button>
+</div></div>
+
+<!-- DELETE MODAL -->
+<div class="modal-overlay" id="delete-modal"><div class="modal">
+  <h3>Delete this session?</h3>
+  <p style="font-size:14px;color:var(--text-muted);margin-bottom:4px;">This cannot be undone.</p>
+  <div class="modal-actions">
+    <button class="btn-secondary" onclick="closeDelete()">Cancel</button>
+    <button class="btn-secondary btn-danger" id="confirm-delete-btn">Delete</button>
+  </div>
+</div></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let sessions = JSON.parse(localStorage.getItem('swimlog_sessions') || '[]');
+let sessionType = 'lap';
+let lapSets = [], drillSets = [];
+let lapRPE = 0, drillRPE = 0, qualityRating = 0;
+let historyFilter = 'all';
+const cs = { 'lap-breathing':'','lap-mood':'','drill-breathing':'','drill-mood':'','drill-focus':[] };
+
+document.addEventListener('DOMContentLoaded', () => {
+  const now = new Date();
+  document.getElementById('f-date').value = now.toISOString().split('T')[0];
+  document.getElementById('f-time').value = now.toTimeString().slice(0,5);
+  buildRPE('lap-rpe-track','lap'); buildRPE('drill-rpe-track','drill');
+  buildQuality(); setupChips(); setupAutoCalc();
+});
+
+function setSessionType(type) {
+  sessionType = type;
+  document.getElementById('toggle-lap').className = 'type-btn' + (type==='lap'?' active-lap':'');
+  document.getElementById('toggle-drill').className = 'type-btn' + (type==='drill'?' active-drill':'');
+  document.getElementById('form-lap').classList.toggle('active', type==='lap');
+  document.getElementById('form-drill').classList.toggle('active', type==='drill');
+}
+
+function buildRPE(id, scope) {
+  const t = document.getElementById(id);
+  const c = ['#22c55e','#22c55e','#4ade80','#84cc16','#a3e635','#facc15','#f59e0b','#f97316','#ef4444','#dc2626'];
+  let h = '';
+  for (let i=1;i<=10;i++) h += '<div class="rpe-seg" data-rpe="'+i+'" style="background:'+c[i-1]+'" onclick="setRPE('+i+',\''+scope+'\')"></div>';
+  h += '<div class="rpe-val" id="'+scope+'-rpe-val">\u2014</div>';
+  t.innerHTML = h;
+}
+function setRPE(v, s) {
+  if(s==='lap') lapRPE=v; else drillRPE=v;
+  document.getElementById(s+'-rpe-val').textContent = v;
+  document.querySelectorAll('#'+s+'-rpe-track .rpe-seg').forEach(e => e.classList.toggle('filled', +e.dataset.rpe<=v));
+}
+
+function buildQuality() {
+  const t = document.getElementById('quality-track');
+  let h = '';
+  for(let i=1;i<=5;i++) h += '<div class="quality-star" data-q="'+i+'" onclick="setQuality('+i+')">&#9733;</div>';
+  t.innerHTML = h;
+}
+function setQuality(v) {
+  qualityRating = v;
+  document.querySelectorAll('.quality-star').forEach(s => s.classList.toggle('filled', +s.dataset.q<=v));
+}
+
+function setupChips() {
+  ['lap-breathing','lap-mood','drill-breathing','drill-mood'].forEach(g => {
+    document.querySelectorAll('#'+g+'-chips .chip').forEach(chip => {
+      chip.onclick = () => {
+        document.querySelectorAll('#'+g+'-chips .chip').forEach(c => c.classList.remove('selected','selected-purple'));
+        chip.classList.add(g.startsWith('drill')?'selected-purple':'selected');
+        cs[g] = chip.dataset.val;
+      };
+    });
+  });
+  document.querySelectorAll('#drill-focus-chips .chip').forEach(chip => {
+    chip.onclick = () => {
+      chip.classList.toggle('selected-purple');
+      cs['drill-focus'] = [...document.querySelectorAll('#drill-focus-chips .chip.selected-purple')].map(c=>c.dataset.val);
+    };
+  });
+}
+
+function setupAutoCalc() {
+  const pool = document.getElementById('f-pool');
+  const calc = (prefix, color) => {
+    const l = parseInt(document.getElementById(prefix+'-lengths').value)||0;
+    const p = parseInt(pool.value)||25;
+    const u = pool.options[pool.selectedIndex].dataset.unit||'yd';
+    document.getElementById(prefix+'-dist').value = l*p>0 ? l*p+' '+u : '';
+  };
+  document.getElementById('lap-lengths').addEventListener('input', ()=>calc('lap'));
+  document.getElementById('drill-lengths').addEventListener('input', ()=>calc('drill'));
+  pool.addEventListener('change', ()=>{calc('lap');calc('drill');});
+}
+
+function addLapSet() {
+  const r=parseInt(document.getElementById('lap-set-reps').value)||1;
+  const d=document.getElementById('lap-set-dist').value;
+  const t=document.getElementById('lap-set-type').value;
+  lapSets.push({reps:r,dist:+d,type:t}); renderSets('lap');
+  document.getElementById('lap-set-reps').value='';
+}
+function addDrillSet() {
+  const r=parseInt(document.getElementById('drill-set-reps').value)||1;
+  const d=document.getElementById('drill-set-dist').value;
+  const t=document.getElementById('drill-set-type').value;
+  drillSets.push({reps:r,dist:+d,type:t}); renderSets('drill');
+  document.getElementById('drill-set-reps').value='';
+}
+function removeLapSet(i){lapSets.splice(i,1);renderSets('lap');}
+function removeDrillSet(i){drillSets.splice(i,1);renderSets('drill');}
+function renderSets(scope) {
+  const arr=scope==='lap'?lapSets:drillSets, fn=scope==='lap'?'removeLapSet':'removeDrillSet';
+  document.getElementById(scope+'-set-list').innerHTML = arr.map((s,i) =>
+    '<div class="set-row"><span class="set-num">'+(i+1)+'</span><span class="set-desc">'+s.reps+' \u00D7 '+s.dist+' '+s.type+'</span><button class="set-remove" onclick="'+fn+'('+i+')">\u00D7</button></div>'
+  ).join('');
+}
+
+function saveLapSession() {
+  const pe=document.getElementById('f-pool'),pool=+pe.value||25,pu=pe.options[pe.selectedIndex].dataset.unit||'yd';
+  const lengths=parseInt(document.getElementById('lap-lengths').value)||0;
+  if(!lengths){toast('Enter total lengths','var(--amber)');return;}
+  sessions.unshift({
+    id:Date.now(),type:'lap',
+    date:document.getElementById('f-date').value,time:document.getElementById('f-time').value,
+    pool_length:pool,pool_unit:pu,
+    duration_min:parseInt(document.getElementById('f-duration').value)||null,
+    total_lengths:lengths,total_distance:lengths*pool,
+    sets:[...lapSets],
+    breathing:cs['lap-breathing']||null,
+    rpe:lapRPE||null,
+    strokes_per_25:parseInt(document.getElementById('lap-spl').value)||null,
+    avg_rest_sec:parseInt(document.getElementById('lap-rest').value)||null,
+    mood:cs['lap-mood']||null,
+    notes:document.getElementById('lap-notes').value.trim()||null
+  });
+  save();resetForm();toast('Lap session saved!');
+}
+
+function saveDrillSession() {
+  const pe=document.getElementById('f-pool'),pool=+pe.value||25,pu=pe.options[pe.selectedIndex].dataset.unit||'yd';
+  const lengths=parseInt(document.getElementById('drill-lengths').value)||0;
+  if(!drillSets.length&&!lengths){toast('Add drills or enter lengths','var(--amber)');return;}
+  sessions.unshift({
+    id:Date.now(),type:'drill',
+    date:document.getElementById('f-date').value,time:document.getElementById('f-time').value,
+    pool_length:pool,pool_unit:pu,
+    duration_min:parseInt(document.getElementById('f-duration').value)||null,
+    total_lengths:lengths,total_distance:lengths*pool,
+    drills:[...drillSets],
+    technique_focus:cs['drill-focus'].length?[...cs['drill-focus']]:null,
+    breathing:cs['drill-breathing']||null,
+    execution_quality:qualityRating||null,
+    rpe:drillRPE||null,
+    mood:cs['drill-mood']||null,
+    notes:document.getElementById('drill-notes').value.trim()||null
+  });
+  save();resetForm();toast('Drill session saved!','var(--purple)');
+}
+
+function resetForm() {
+  ['lap-lengths','lap-dist','drill-lengths','drill-dist','f-duration','lap-spl','lap-rest','lap-notes','drill-notes'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  lapSets=[];drillSets=[];renderSets('lap');renderSets('drill');
+  lapRPE=0;drillRPE=0;qualityRating=0;
+  ['lap','drill'].forEach(s=>{document.getElementById(s+'-rpe-val').textContent='\u2014';document.querySelectorAll('#'+s+'-rpe-track .rpe-seg').forEach(e=>e.classList.remove('filled'));});
+  document.querySelectorAll('.quality-star').forEach(s=>s.classList.remove('filled'));
+  document.querySelectorAll('.chip.selected,.chip.selected-purple').forEach(c=>c.classList.remove('selected','selected-purple'));
+  cs['lap-breathing']='';cs['lap-mood']='';cs['drill-breathing']='';cs['drill-mood']='';cs['drill-focus']=[];
+  const now=new Date();
+  document.getElementById('f-date').value=now.toISOString().split('T')[0];
+  document.getElementById('f-time').value=now.toTimeString().slice(0,5);
+}
+
+function switchView(view) {
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.toggle('active',t.dataset.view===view));
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+view).classList.add('active');
+  if(view==='history')renderHistory();
+  if(view==='stats')renderStats();
+}
+
+function setFilter(f) {
+  historyFilter=f;
+  document.querySelectorAll('.filter-pill').forEach(p=>p.classList.toggle('active',p.dataset.filter===f));
+  renderHistory();
+}
+
+function renderHistory() {
+  const el=document.getElementById('history-list');
+  const filtered=historyFilter==='all'?sessions:sessions.filter(s=>(s.type||'lap')===historyFilter);
+  if(!filtered.length){el.innerHTML='<div class="empty"><div class="empty-icon">&#127946;</div>'+(sessions.length?'No matching sessions.':'No sessions yet.<br>Log your first swim!')+'</div>';return;}
+  el.innerHTML=filtered.map(s=>{
+    const idx=sessions.indexOf(s);
+    const d=new Date(s.date+'T12:00:00');
+    const ds=d.toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric'});
+    const type=s.type||'lap';
+    const rc=s.rpe?(s.rpe<=4?'tag-rpe-low':s.rpe<=7?'tag-rpe-mid':'tag-rpe-high'):'';
+    const dist=s.total_distance||s.total_yards||0;
+    const u=s.pool_unit||'yd';
+    let tags='<span class="session-tag '+(type==='drill'?'tag-drill':'tag-lap')+'">'+(type==='drill'?'Drill':'Lap Swim')+'</span>';
+    if(s.breathing)tags+='<span class="session-tag">'+s.breathing+'</span>';
+    if(s.rpe)tags+='<span class="session-tag '+rc+'">RPE '+s.rpe+'</span>';
+    if(s.execution_quality)tags+='<span class="session-tag tag-drill">'+'\u2605'.repeat(s.execution_quality)+'</span>';
+    if(s.duration_min)tags+='<span class="session-tag">'+s.duration_min+' min</span>';
+    return '<div class="session-item" onclick="showDetail('+idx+')"><div class="session-top"><span class="session-date">'+ds+'</span><span class="session-dist" style="'+(type==='drill'?'color:var(--purple)':'')+'">'+(dist?dist+' '+u:'\u2014')+'</span></div><div class="session-tags">'+tags+'</div></div>';
+  }).join('');
+}
+
+function showDetail(i) {
+  const s=sessions[i],d=new Date(s.date+'T12:00:00');
+  const ds=d.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric',year:'numeric'});
+  const type=s.type||'lap',u=s.pool_unit||'yd',dist=s.total_distance||s.total_yards||0;
+  let rows=[['Type',type==='drill'?'Drill Practice':'Lap Swim'],['Date',ds],['Time',s.time||'\u2014'],['Pool',s.pool_length+' '+u],['Duration',s.duration_min?s.duration_min+' min':'\u2014'],['Total Lengths',s.total_lengths||'\u2014'],['Total Distance',dist?dist+' '+u:'\u2014'],['Breathing',s.breathing||'\u2014'],['RPE',s.rpe||'\u2014'],['Mood Before',s.mood||'\u2014']];
+  if(type==='lap'){rows.push(['Strokes / 25',s.strokes_per_25||'\u2014']);rows.push(['Avg Rest',s.avg_rest_sec?s.avg_rest_sec+' sec':'\u2014']);}
+  if(type==='drill'){rows.push(['Technique Focus',s.technique_focus?s.technique_focus.join(', '):'\u2014']);rows.push(['Execution Quality',s.execution_quality?'\u2605'.repeat(s.execution_quality)+'\u2606'.repeat(5-s.execution_quality):'\u2014']);}
+  const sa=type==='drill'?(s.drills||[]):(s.sets||[]);
+  let sh='';
+  if(sa.length){const lb=type==='drill'?'Drills':'Sets';sh='<div class="card" style="margin-top:12px;"><div class="card-label">'+lb+'</div>'+sa.map((st,j)=>'<div class="set-row"><span class="set-num">'+(j+1)+'</span><span class="set-desc">'+st.reps+' \u00D7 '+st.dist+' '+st.type+'</span></div>').join('')+'</div>';}
+  const nh=s.notes?'<div class="detail-notes">'+s.notes+'</div>':'';
+  const ac=type==='drill'?'var(--purple)':'var(--accent)';
+  document.getElementById('detail-content').innerHTML='<div class="detail-header"><button class="back-btn" onclick="switchView(\'history\')">\u2190</button><span style="font-size:17px;font-weight:600;color:'+ac+'">'+(type==='drill'?'Drill Session':'Lap Session')+'</span></div><div class="card">'+rows.map(([l,v])=>'<div class="detail-row"><span class="dl">'+l+'</span><span class="dv">'+v+'</span></div>').join('')+nh+'</div>'+sh+'<button class="btn-secondary btn-danger" style="margin-top:12px;" onclick="confirmDelete('+i+')">Delete Session</button>';
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-detail').classList.add('active');
+  document.querySelectorAll('.nav-tab').forEach(t=>t.classList.remove('active'));
+}
+
+function confirmDelete(i){document.getElementById('delete-modal').classList.add('show');document.getElementById('confirm-delete-btn').onclick=()=>{sessions.splice(i,1);save();closeDelete();switchView('history');toast('Session deleted');};}
+function closeDelete(){document.getElementById('delete-modal').classList.remove('show');}
+
+function renderStats() {
+  const el=document.getElementById('stats-content');
+  if(!sessions.length){el.innerHTML='<div class="empty"><div class="empty-icon">&#128202;</div>Log a session to see stats.</div>';return;}
+  const laps=sessions.filter(s=>(s.type||'lap')==='lap'),drills=sessions.filter(s=>s.type==='drill');
+  const totalDist=sessions.reduce((a,s)=>a+(s.total_distance||s.total_yards||0),0);
+  const totalTime=sessions.reduce((a,s)=>a+(s.duration_min||0),0);
+  const rpeSes=sessions.filter(s=>s.rpe),avgRPE=rpeSes.length?(rpeSes.reduce((a,s)=>a+s.rpe,0)/rpeSes.length).toFixed(1):'\u2014';
+  const splSes=laps.filter(s=>s.strokes_per_25),avgSPL=splSes.length?(splSes.reduce((a,s)=>a+s.strokes_per_25,0)/splSes.length).toFixed(0):'\u2014';
+  const qSes=drills.filter(s=>s.execution_quality),avgQ=qSes.length?(qSes.reduce((a,s)=>a+s.execution_quality,0)/qSes.length).toFixed(1):'\u2014';
+
+  const wm={};
+  sessions.forEach(s=>{const d=new Date(s.date+'T12:00:00'),ws=new Date(d);ws.setDate(d.getDate()-d.getDay());const k=ws.toISOString().split('T')[0];if(!wm[k])wm[k]={lap:0,drill:0};const dist=s.total_distance||s.total_yards||0;if((s.type||'lap')==='lap')wm[k].lap+=dist;else wm[k].drill+=dist;});
+  const weeks=Object.entries(wm).sort((a,b)=>a[0].localeCompare(b[0])).slice(-8);
+  const mx=Math.max(...weeks.map(([,v])=>v.lap+v.drill),1);
+  const bars=weeks.map(([wk,vol])=>{
+    const total=vol.lap+vol.drill,lp=(vol.lap/mx)*100,dp=(vol.drill/mx)*100;
+    const lb=new Date(wk+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'});
+    return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;"><span style="font-family:\'JetBrains Mono\',monospace;font-size:10px;color:var(--text-dim);">'+total+'</span><div style="width:100%;height:120px;display:flex;align-items:flex-end;"><div style="width:100%;display:flex;flex-direction:column;">'+(vol.drill?'<div style="height:'+dp+'%;background:var(--purple);border-radius:4px 4px 0 0;min-height:'+(vol.lap?0:4)+'px;"></div>':'')+(vol.lap?'<div style="height:'+lp+'%;background:linear-gradient(to top,var(--accent),var(--cyan));border-radius:'+(vol.drill?'0':'4px 4px')+' 0 0;min-height:4px;"></div>':'')+'</div></div><span style="font-size:9px;color:var(--text-dim);">'+lb+'</span></div>';
+  }).join('');
+
+  el.innerHTML='<div class="stats-grid"><div class="stat-card accent"><div class="stat-value">'+totalDist.toLocaleString()+'</div><div class="stat-label">Total distance</div></div><div class="stat-card green"><div class="stat-value">'+sessions.length+'</div><div class="stat-label">Sessions</div></div><div class="stat-card cyan"><div class="stat-value">'+laps.length+'</div><div class="stat-label">Lap sessions</div></div><div class="stat-card purple"><div class="stat-value">'+drills.length+'</div><div class="stat-label">Drill sessions</div></div><div class="stat-card amber"><div class="stat-value">'+avgRPE+'</div><div class="stat-label">Avg RPE</div></div><div class="stat-card accent"><div class="stat-value">'+avgSPL+'</div><div class="stat-label">Avg strokes / 25</div></div></div>'+(avgQ!=='\u2014'?'<div class="card"><div class="card-label">Avg Drill Execution</div><div style="font-size:20px;">'+avgQ+' / 5</div></div>':'')+(weeks.length?'<div class="card"><div class="card-label">Weekly Volume</div><div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;"><span style="width:10px;height:10px;border-radius:2px;background:var(--accent);display:inline-block;"></span><span style="font-size:11px;color:var(--text-dim);">Laps</span><span style="width:10px;height:10px;border-radius:2px;background:var(--purple);display:inline-block;margin-left:8px;"></span><span style="font-size:11px;color:var(--text-dim);">Drills</span></div><div style="display:flex;gap:4px;padding-top:4px;">'+bars+'</div></div>':'')+'<div class="card"><div class="card-label">Total Time in Water</div><div style="font-size:16px;font-weight:500;">'+(totalTime?totalTime+' min':'No duration data yet')+'</div></div>';
+}
+
+function showExport(){document.getElementById('export-modal').classList.add('show');}
+function closeExport(){document.getElementById('export-modal').classList.remove('show');}
+
+function exportCSV() {
+  if(!sessions.length){toast('No sessions to export','var(--amber)');return;}
+  const h=['type','date','time','pool_length','pool_unit','duration_min','total_lengths','total_distance','breathing','rpe','strokes_per_25','avg_rest_sec','technique_focus','execution_quality','mood','sets_summary','notes'];
+  const rows=sessions.map(s=>{
+    const t=s.type||'lap',sa=t==='drill'?(s.drills||[]):(s.sets||[]);
+    const sum=sa.map(st=>st.reps+'x'+st.dist+' '+st.type).join('; ');
+    return [t,s.date,s.time,s.pool_length,s.pool_unit||'yd',s.duration_min||'',s.total_lengths||'',s.total_distance||s.total_yards||'',s.breathing||'',s.rpe||'',s.strokes_per_25||'',s.avg_rest_sec||'',s.technique_focus?s.technique_focus.join('; '):'',s.execution_quality||'',s.mood||'','"'+sum+'"','"'+(s.notes||'').replace(/"/g,'""')+'"'].join(',');
+  });
+  dl('swimlog_sessions.csv',h.join(',')+'\n'+rows.join('\n'),'text/csv');
+  closeExport();toast('CSV downloaded');
+}
+
+function exportJSON(){
+  if(!sessions.length){toast('No sessions','var(--amber)');return;}
+  dl('swimlog_sessions.json',JSON.stringify(sessions,null,2),'application/json');
+  closeExport();toast('JSON downloaded');
+}
+
+function exportClaudePrompt(){
+  if(!sessions.length){toast('No sessions','var(--amber)');return;}
+  const lc=sessions.filter(s=>(s.type||'lap')==='lap').length,dc=sessions.filter(s=>s.type==='drill').length;
+  const p='I\'m a developing adult swimmer working through a 12-week program (1-2 pool sessions/week). I log two types of sessions: Lap Swim (distance/pacing focus) and Drill Practice (technique/skill focus). I have '+lc+' lap sessions and '+dc+' drill sessions logged. Below is my data in JSON format. Please analyze:\n\n1. **Progress summary** \u2014 Am I improving in distance, consistency, and efficiency?\n2. **Breathing assessment** \u2014 Based on logged breathing patterns and RPE across both session types, how is my breathing developing?\n3. **Lap swim analysis** \u2014 Trends in distance, stroke count, pacing, and RPE over time.\n4. **Drill practice analysis** \u2014 Am I doing enough technique work? Trends in execution quality? Which drills am I using most, and are there gaps?\n5. **Balance** \u2014 Is my ratio of lap-to-drill sessions appropriate for a developing swimmer?\n6. **Consistency** \u2014 Am I hitting 1-2x/week? Any gaps?\n7. **Specific recommendations** \u2014 Based on where I am, what should I focus on in my next 2-3 sessions (both lap and drill)?\n\n```json\n'+JSON.stringify(sessions,null,2)+'\n```';
+  dl('swimlog_claude_prompt.txt',p,'text/plain');
+  closeExport();toast('Prompt file downloaded');
+}
+
+function dl(name,content,type){const b=new Blob([content],{type});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=name;a.click();URL.revokeObjectURL(a.href);}
+function save(){localStorage.setItem('swimlog_sessions',JSON.stringify(sessions));}
+function toast(msg,bg){const t=document.getElementById('toast');t.textContent=msg;t.style.background=bg||'var(--green)';t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2200);}
+</script>
+</body>
+</html>
