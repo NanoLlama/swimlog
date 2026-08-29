@@ -1,0 +1,64 @@
+# PhIPSeq Plate Designer v4 — dithered plate layouts
+
+`plate_manifest_tool_v4.html` extends the v3 designer so a list of subjects can be laid
+out as **side-by-side duplicates** and **dithered across a user-defined number of plates**,
+instead of being packed into contiguous cohort blocks.
+
+Open the file in a browser and upload a manifest built from
+`PhIPSeq_Manifest_Template_v4.xlsx` (v3 manifests still load unchanged).
+
+## Why dither
+
+In block fill, a cohort occupies whole plates. Any plate-level batch effect —
+reagent lot, incubation, thermocycler position — is then perfectly confounded with
+cohort, and cannot be separated from the biology at analysis time. Dithering spreads
+each group evenly over a window of plates, so plate becomes a nuisance variable that
+can be modelled rather than a confounder.
+
+## Autofill options
+
+| Control | Meaning |
+|---|---|
+| **Layout mode** | `Dither groups across plates` (new) or `Block fill` (v3 behaviour, unchanged). |
+| **Group / stratify by** | The variable balanced across plates: cohort, diagnosis, `dither_group`, sample type, sex, subject ID, or none. Only fields carrying data in the uploaded manifest are offered. |
+| **Dither across N plates** | Window size. Each block of N consecutive plates receives a proportional share of every group. N = plate count spreads each group over the whole run. |
+| **Well placement** | `Scatter` randomises which well pair a sample lands in (seeded), breaking up row/column position effects as well as plate effects. `Sequential` fills A1→H10 in order. |
+| **Random seed** | Every random choice comes from this seed, so the same inputs always produce the same layout. Written to the Design Log sheet. |
+| **Replicates per sample** | 2 = side-by-side duplicate (40 samples/plate), 1 = singlet (80 samples/plate). |
+| **Keep subjects whole** | All samples from one `subject_id` (e.g. longitudinal draws) land on the same plate, so within-subject comparisons are never split across a batch. |
+
+## Algorithm
+
+1. **Units.** A unit is one sample, or — with *keep subjects whole* on — every sample
+   belonging to one subject. Each sample in a unit consumes one replicate chunk.
+2. **Chunks.** Wells are cut into replicate chunks from the canonical column-pair order
+   (`A1+A2, B1+B2, … H9+H10`) and a chunk is only offered if *every* well in it is free.
+   A duplicate is therefore always physically side-by-side, even when some wells were
+   placed by hand first. Columns 11–12 are never touched.
+3. **Plate count.** The plan uses only as many plates as the sample count requires, so
+   dithering never leaves half-empty plates behind. Spare plates are kept as overflow.
+4. **Stream.** Units are emitted in proportional round-robin order across groups
+   (repeatedly taking the group furthest behind), so any prefix of the stream is a
+   representative slice of the whole study.
+5. **Deal.** Plates are cut into windows of N. Within a window each unit goes to the
+   plate currently holding the least of its group, then the least-loaded plate overall,
+   with a seeded coin-flip breaking exact ties. When a window fills, the next one starts.
+6. **Placement.** Units are written into that plate's chunk list, shuffled beforehand in
+   scatter mode.
+
+The preview shows the realised **group × plate cross-tab** with a per-group spread
+(min–max per plate) before anything is applied; nothing is written until *Apply*.
+
+## Export
+
+Existing sheets are unchanged. A **Design Log** sheet is added when an autofill plan was
+applied, recording mode, group variable, window size, seed, replicate count, subject
+handling, plates used, and the group × plate composition — enough to reproduce the
+layout exactly and to describe it in a methods section.
+
+## Template
+
+`PhIPSeq_Manifest_Template_v4.xlsx` adds one optional column, `dither_group`, for an
+explicit stratification variable when cohort/diagnosis are not the right axis (study
+site, collection batch, freezer). It is optional and additive — v3 manifests load
+unchanged, and `dither_group` simply appears as another *group by* choice when populated.
