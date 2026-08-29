@@ -23,6 +23,7 @@ can be modelled rather than a confounder.
 | **Group / stratify by** | The variable balanced across plates: cohort, diagnosis, `dither_group`, sample type, sex, subject ID, or none. Only fields carrying data in the uploaded manifest are offered. |
 | **Dither across N plates** | Window size. Each block of N consecutive plates receives a proportional share of every group. N = plate count spreads each group over the whole run. |
 | **Well placement** | How samples are arranged *within* a plate. `Ordered` (default) gives each group a contiguous run of column pairs — the plate reads as solid blocks, which is what makes hand pipetting quick. `Scatter` randomises which well pair a sample lands in, breaking up row/column position effects too; use it once a robot is doing the work, since a machine does not care about layout. `Sequential` fills A1→H10 in deal order, leaving groups interleaved. |
+| **Sample order within group** | `Sequential` (default) gives each plate a consecutive run of every group in manifest order — plate 1 takes Cohort A 1–17, plate 2 takes 18–34, and so on — so tubes are picked up in rack order. `Randomised` gives each plate a seeded random subset instead; per-plate counts are identical either way. |
 | **Random seed** | Every random choice comes from this seed, so the same inputs always produce the same layout. Written to the Design Log sheet. |
 | **Replicates per sample** | 2 = side-by-side duplicate (40 samples/plate), 1 = singlet (80 samples/plate). |
 | **Keep subjects whole** | All samples from one `subject_id` (e.g. longitudinal draws) land on the same plate, so within-subject comparisons are never split across a batch. |
@@ -37,12 +38,16 @@ can be modelled rather than a confounder.
    placed by hand first. Columns 11–12 are never touched.
 3. **Plate count.** The plan uses only as many plates as the sample count requires, so
    dithering never leaves half-empty plates behind. Spare plates are kept as overflow.
-4. **Stream.** Units are emitted in proportional round-robin order across groups
-   (repeatedly taking the group furthest behind), so any prefix of the stream is a
-   representative slice of the whole study.
-5. **Deal.** Plates are cut into windows of N. Within a window each unit goes to the
-   plate currently holding the least of its group, then the least-loaded plate overall,
-   with a seeded coin-flip breaking exact ties. When a window fills, the next one starts.
+4. **Quota.** Plates are cut into windows of N. Every group is apportioned across the
+   windows in proportion to window capacity (largest remainder), so no group can drift
+   into one end of the run. Plates beyond what the sample count needs get no quota and
+   serve only as overflow, keeping short runs compact.
+5. **Deal.** Within a window the groups are dealt one after another in manifest order —
+   all of the first group, then all of the second — each group split across the window's
+   plates as **consecutive runs** sized in proportion to the room each plate has left.
+   Because the units arrive in manifest order, a plate receives a contiguous block of
+   each group; selecting `Randomised` shuffles the group first, which turns the same
+   contiguous slicing into a random subset per plate.
 6. **Placement.** Units are written into that plate's chunk list. This step decides
    arrangement only — which plate a sample belongs to is already fixed by step 5, so
    changing placement never disturbs the dither balance. In `ordered` mode the plate's

@@ -773,6 +773,14 @@
   .balance-table tr.sum td { color: var(--muted); }
 
   .autofill-preview .pv-head { margin-bottom: 4px; }
+  .autofill-preview .pv-fill {
+    border-top: 1px solid var(--border);
+    padding-top: 8px;
+    margin-bottom: 10px;
+    line-height: 1.7;
+  }
+  .autofill-preview .pv-fill-h { color: var(--muted); margin-bottom: 2px; }
+  .autofill-preview .fo-plate { color: var(--accent); font-weight: 600; margin-right: 4px; }
   .autofill-preview .pv-notes { color: var(--muted); line-height: 1.7; }
   .autofill-preview .warn { color: var(--accent2); }
 
@@ -934,7 +942,7 @@
 <div class="autofill-modal-overlay hidden" id="autofillOverlay">
   <div class="autofill-modal">
     <h2>⚡ Autofill Plates</h2>
-    <p>Only <strong>serum, CSF, and plasma</strong> samples are autofilled — mAbs, controls and other types stay manual. Each sample is laid down as a <strong>side-by-side duplicate</strong> in columns 1–10; columns 11–12 are left for controls. In <strong>dither</strong> mode every block of N consecutive plates receives a proportional share of each group, so group membership is not confounded with plate. <strong>Well placement</strong> is a separate choice: keep groups in contiguous column blocks for hand pipetting, or scatter them once a robot is doing the work. Layouts are fully reproducible from the seed.</p>
+    <p>Only <strong>serum, CSF, and plasma</strong> samples are autofilled — mAbs, controls and other types stay manual. Each sample is laid down as a <strong>side-by-side duplicate</strong> in columns 1–10; columns 11–12 are left for controls. In <strong>dither</strong> mode every block of N consecutive plates receives a proportional share of each group, so group membership is not confounded with plate. <strong>Sample order</strong> and <strong>well placement</strong> are separate choices: keep each plate's share of a group a consecutive run of tubes laid out in contiguous column blocks for hand pipetting, or randomise both once a robot is doing the work. Layouts are fully reproducible from the seed.</p>
     <div class="dither-controls">
       <div class="dither-field">
         <label for="layoutMode">Layout mode</label>
@@ -954,6 +962,14 @@
         <input type="number" id="ditherWindow" min="1" step="1" value="4"
                oninput="this.dataset.touched=1; autofillOptionChanged();">
         <span class="hint">Window size. N = all plates spreads each group over the whole run.</span>
+      </div>
+      <div class="dither-field">
+        <label for="sampleOrder">Sample order within group</label>
+        <select id="sampleOrder" onchange="autofillOptionChanged()">
+          <option value="sequential">Sequential — manifest order, consecutive runs</option>
+          <option value="random">Randomised — seeded shuffle</option>
+        </select>
+        <span class="hint" id="sampleOrderHint"></span>
       </div>
       <div class="dither-field">
         <label for="wellOrder">Well placement within plate</label>
@@ -1684,25 +1700,20 @@ function buildUnits(list, keepSubjectTogether, groupField) {
   return out;
 }
 
-// Proportional round-robin over groups (Bresenham-style): repeatedly take the
-// group that is furthest behind, so any prefix of the stream is a
-// representative slice of every group.
-function interleaveGroups(groupNames, groupUnits) {
-  const state = groupNames.map(g => ({ g, i: 0, n: groupUnits[g].length }));
-  const out = [];
-  for (;;) {
-    let best = null;
-    state.forEach(x => {
-      if (x.i >= x.n) return;
-      const f = (x.i + 0.5) / x.n;
-      if (!best || f < best.f - 1e-12 || (Math.abs(f - best.f) < 1e-12 && x.n > best.x.n)) {
-        best = { f, x };
-      }
-    });
-    if (!best) break;
-    out.push(groupUnits[best.x.g][best.x.i++]);
-  }
-  return out;
+// Split `total` across `weights` as whole numbers, largest-remainder style.
+// Used to give every dither window — and every plate inside it — its fair
+// share of a group without drifting off by rounding.
+function apportion(total, weights) {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (sum <= 0 || total <= 0) return weights.map(() => 0);
+  const exact = weights.map(w => (total * w) / sum);
+  const base = exact.map(Math.floor);
+  let rem = total - base.reduce((a, b) => a + b, 0);
+  const byFraction = exact
+    .map((e, i) => ({ i, f: e - Math.floor(e) }))
+    .sort((a, b) => b.f - a.f || a.i - b.i);
+  for (let k = 0; k < byFraction.length && rem > 0; k++, rem--) base[byFraction[k].i]++;
+  return base;
 }
 
 // Free replicate chunks on a plate. Chunks are cut from the canonical slot
@@ -1733,6 +1744,7 @@ function readAutofillOptions() {
     windowSize: Math.max(1, parseInt(winEl.value, 10) || 1),
     wellOrder: document.getElementById('wellOrder').value,
     seed: document.getElementById('ditherSeed').value || '1',
+    sampleOrder: document.getElementById('sampleOrder').value,
     keepSubjectTogether: document.getElementById('keepSubjectTogether').checked,
     replicates: parseInt(document.getElementById('replicateCount').value, 10) || 2
   };
@@ -1753,13 +1765,18 @@ function computeAutofillPlan(opts) {
 
   const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField);
 
+  // Groups are processed in the order they first appear in the manifest, so
+  // "cohort A, then cohort B, …" means what it says on the plate.
   const groupUnits = {};
-  units.forEach(u => { (groupUnits[u.group] = groupUnits[u.group] || []).push(u); });
-  const groupNames = Object.keys(groupUnits).sort((a, b) =>
-    groupUnits[b].length - groupUnits[a].length || a.localeCompare(b)
-  );
-  // Randomise within each group only when dithering; block mode keeps file order
-  if (opts.mode === 'dither') groupNames.forEach(g => shuffleInPlace(groupUnits[g], rng));
+  const groupNames = [];
+  units.forEach(u => {
+    if (!groupUnits[u.group]) { groupUnits[u.group] = []; groupNames.push(u.group); }
+    groupUnits[u.group].push(u);
+  });
+  // Sample order inside a group: manifest order, or a seeded shuffle. Both are
+  // dealt out as contiguous runs below, so shuffling is what makes a plate's
+  // share of a group a random subset rather than a consecutive block.
+  if (opts.sampleOrder === 'random') groupNames.forEach(g => shuffleInPlace(groupUnits[g], rng));
 
   // Capacity, in replicate chunks, of every plate
   const chunksByPlate = {}, capacity = {}, used = {}, groupCount = {}, plateUnits = {};
@@ -1779,22 +1796,26 @@ function computeAutofillPlan(opts) {
     groupCount[p][u.group] = (groupCount[p][u.group] || 0) + u.samples.length;
   }
 
-  // Within a window, send the unit to the plate holding least of its group,
-  // then least-loaded overall, with a seeded coin-flip to break exact ties.
-  function pickPlate(win, group, need) {
-    let best = null;
-    win.forEach(p => {
-      if (capacity[p] - used[p] < need) return;
-      const gc = groupCount[p][group] || 0;
-      const tc = used[p];
-      const r = rng();
-      if (!best || gc < best.gc ||
-          (gc === best.gc && tc < best.tc) ||
-          (gc === best.gc && tc === best.tc && r < best.r)) {
-        best = { p, gc, tc, r };
+  // Deal one group across the plates of a window as contiguous runs, each
+  // plate taking a share proportional to the room it has left. Units arrive in
+  // manifest order (or shuffled), so a plate receives a consecutive block of
+  // that group — the run of tubes you pick up at the bench — rather than a
+  // scattered selection. Returns whatever did not fit.
+  function dealRun(win, list) {
+    const room = win.map(p => capacity[p] - used[p]);
+    const free = room.reduce((a, b) => a + b, 0);
+    const need = list.reduce((a, u) => a + u.samples.length, 0);
+    const targets = apportion(Math.min(need, free), room);
+    let i = 0;
+    win.forEach((p, k) => {
+      let want = targets[k];
+      while (i < list.length && want > 0 && capacity[p] - used[p] >= list[i].samples.length) {
+        want -= list[i].samples.length;
+        placeUnit(p, list[i]);
+        i++;
       }
     });
-    return best ? best.p : null;
+    return list.slice(i);
   }
 
   let windows = [];
@@ -1811,35 +1832,72 @@ function computeAutofillPlan(opts) {
     const active = platePool.slice(0, needed);
     const reserve = platePool.slice(needed);
 
-    effectiveWindow = Math.max(1, Math.min(opts.windowSize, active.length));
+    const requested = parseInt(opts.windowSize, 10);
+    effectiveWindow = Math.max(1, Math.min(
+      Number.isFinite(requested) && requested > 0 ? requested : active.length,
+      active.length
+    ));
     for (let i = 0; i < active.length; i += effectiveWindow) {
       windows.push(active.slice(i, i + effectiveWindow));
     }
+    // Plates beyond what the run needs are overflow only — they get no quota,
+    // so a short run stays compact instead of thinning across every plate.
+    const activeWindows = windows.length;
     for (let i = 0; i < reserve.length; i += effectiveWindow) {
       windows.push(reserve.slice(i, i + effectiveWindow));
     }
-    const remaining = interleaveGroups(groupNames, groupUnits);
-    windows.forEach(win => {
-      for (;;) {
-        let placedOne = false;
-        for (let i = 0; i < remaining.length; i++) {
-          const u = remaining[i];
-          const p = pickPlate(win, u.group, u.samples.length);
-          if (p === null) continue;      // does not fit here — try the next unit
-          placeUnit(p, u);
-          remaining.splice(i, 1);
-          placedOne = true;
-          break;
-        }
-        if (!placedOne) break;           // window is full → move to the next one
-      }
+    // Each window gets a share of every group proportional to its capacity, so
+    // no group can drift into one end of the run. Inside a window the groups
+    // are then dealt one after another, in manifest order: all of the first
+    // group, then all of the second, and so on.
+    const winCap = windows.map(win => win.reduce((a, p) => a + capacity[p], 0));
+    const activeCap = winCap.slice(0, activeWindows);
+    const spare = new Array(windows.length - activeWindows).fill(0);
+    const queues = {};
+    const quota = {};
+    groupNames.forEach(g => {
+      queues[g] = groupUnits[g].slice();
+      const demand = queues[g].reduce((a, u) => a + u.samples.length, 0);
+      quota[g] = apportion(demand, activeCap).concat(spare);
     });
-    remaining.forEach(u => unplaced.push(u));
+
+    let carry = [];
+    windows.forEach((win, wi) => {
+      const work = carry;
+      carry = [];
+      groupNames.forEach(g => {
+        let want = quota[g][wi];
+        while (want > 0 && queues[g].length) {
+          const u = queues[g][0];
+          work.push(queues[g].shift());
+          want -= u.samples.length;
+        }
+      });
+      const byGroup = {};
+      work.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
+      groupNames.forEach(g => {
+        if (byGroup[g]) dealRun(win, byGroup[g]).forEach(u => carry.push(u));
+      });
+    });
+
+    // Anything a window could not take, plus any rounding remainder
+    groupNames.forEach(g => queues[g].forEach(u => carry.push(u)));
+    if (carry.length) {
+      const byGroup = {};
+      carry.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
+      groupNames.forEach(g => {
+        if (byGroup[g]) dealRun(platePool, byGroup[g]).forEach(u => unplaced.push(u));
+      });
+    }
   } else {
-    // Block mode — v3 behaviour: cohorts form contiguous blocks, filled in order
+    // Block mode — v3 behaviour: cohorts form contiguous blocks, filled in
+    // order, largest cohort first so the ≤10 single-plate rule still packs well
     let idx = 0;
     const advance = () => { while (idx < platePool.length && capacity[platePool[idx]] - used[platePool[idx]] <= 0) idx++; };
-    groupNames.forEach(g => {
+    const blockOrder = groupNames.slice().sort((a, b) =>
+      groupUnits[b].length - groupUnits[a].length || a.localeCompare(b)
+    );
+    blockOrder.forEach(g => {
       const list = groupUnits[g];
       const need = list.reduce((a, u) => a + u.samples.length, 0);
       advance();
@@ -1925,6 +1983,11 @@ function closeAutofillModal() {
   autofillPlan = null;
 }
 
+const SAMPLE_ORDER_HINTS = {
+  sequential: 'Each plate takes a consecutive block of every group — grab tubes in rack order.',
+  random: 'Each plate takes a random subset. Breaks any bias hidden in manifest order.'
+};
+
 const WELL_ORDER_HINTS = {
   grouped: 'Each group fills consecutive column pairs — easiest to pipette by hand.',
   scatter: 'Randomises position too. Best once a robot is doing the pipetting.',
@@ -1934,6 +1997,8 @@ const WELL_ORDER_HINTS = {
 function onWellOrderChange() {
   const el = document.getElementById('wellOrderHint');
   if (el) el.textContent = WELL_ORDER_HINTS[document.getElementById('wellOrder').value] || '';
+  const se = document.getElementById('sampleOrderHint');
+  if (se) se.textContent = SAMPLE_ORDER_HINTS[document.getElementById('sampleOrder').value] || '';
 }
 
 function onLayoutModeChange() {
@@ -1979,7 +2044,7 @@ function previewAutofill() {
   head.push(`<strong>${res.sampleCount}</strong> sample(s) in <strong>${res.unitCount}</strong> unit(s) → <strong>${res.platesUsed.length}</strong> plate(s)`);
   head.push(`Mode: <strong>${opts.mode === 'dither' ? `dither across ${res.effectiveWindow} plate(s)` : 'block fill'}</strong> · Group by: <strong>${escHtml(groupLabel)}</strong>`);
   const wellOrderLabel = { grouped: 'grouped in column blocks', scatter: 'scattered', sequential: 'sequential' }[opts.wellOrder] || opts.wellOrder;
-  head.push(`${wellsPer === 2 ? 'Side-by-side duplicates' : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
+  head.push(`${wellsPer === 2 ? 'Side-by-side duplicates' : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Samples: <strong>${opts.sampleOrder === 'random' ? 'randomised' : 'manifest order'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
   if (opts.keepSubjectTogether) head.push('Subjects kept whole: every sample from one subject lands on the same plate.');
 
   // ── Group × plate cross-tab ─────────────────────────────────────────────────
@@ -2012,6 +2077,23 @@ function previewAutofill() {
     '<td class="tot"></td><td class="tot"></td></tr>';
   table += '</tbody></table>';
 
+  // Fill order — the consecutive run of each group that landed on each plate,
+  // so the bench can check the layout against the tube rack before committing.
+  let fillOrder = '';
+  if (opts.mode === 'dither') {
+    const lines = res.platesUsed.map(p => {
+      const byGroup = {};
+      res.plateUnits[p].forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
+      const parts = res.groupNames.filter(g => byGroup[g]).map(g => {
+        const list = byGroup[g];
+        const a = list[0].label, b = list[list.length - 1].label;
+        return `${escHtml(g)} ${escHtml(a)}${list.length > 1 ? ' → ' + escHtml(b) : ''} (${list.length})`;
+      });
+      return `<div><span class="fo-plate">P${p}</span> ${parts.join(' · ')}</div>`;
+    });
+    fillOrder = `<div class="pv-fill"><div class="pv-fill-h">Fill order per plate</div>${lines.join('')}</div>`;
+  }
+
   const notes = [];
   if (res.unplaced.length) {
     const n = res.unplaced.reduce((a, u) => a + u.samples.length, 0);
@@ -2028,7 +2110,7 @@ function previewAutofill() {
 
   box.innerHTML =
     `<div class="pv-head">${head.join('<br>')}</div>` +
-    table +
+    table + fillOrder +
     `<div class="pv-notes">${notes.join('<br>')}</div>`;
 
   document.getElementById('applyAutofillBtn').disabled = false;
@@ -2187,6 +2269,7 @@ function buildDesignLogSheet() {
   rows.push(['Dither window (plates)', o.mode === 'dither' ? m.effectiveWindow : 'n/a']);
   rows.push(['Group / stratify by', groupLabel]);
   rows.push(['Replicates per sample', o.replicates]);
+  rows.push(['Sample order within group', o.sampleOrder === 'random' ? 'Randomised (seeded)' : 'Manifest order (consecutive runs)']);
   rows.push(['Well placement', { grouped: 'Ordered — groups in contiguous column blocks',
                                  scatter: 'Scattered (seeded)',
                                  sequential: 'Sequential (deal order)' }[o.wellOrder] || o.wellOrder]);
