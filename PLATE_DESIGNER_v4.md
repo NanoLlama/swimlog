@@ -22,7 +22,7 @@ can be modelled rather than a confounder.
 | **Layout mode** | `Dither groups across plates` (new) or `Block fill` (v3 behaviour, unchanged). |
 | **Group / stratify by** | The variable balanced across plates: cohort, diagnosis, `dither_group`, sample type, sex, subject ID, or none. Only fields carrying data in the uploaded manifest are offered. |
 | **Dither across N plates** | Window size. Each block of N consecutive plates receives a proportional share of every group. N = plate count spreads each group over the whole run. |
-| **Well placement** | `Scatter` randomises which well pair a sample lands in (seeded), breaking up row/column position effects as well as plate effects. `Sequential` fills A1→H10 in order. |
+| **Well placement** | How samples are arranged *within* a plate. `Ordered` (default) gives each group a contiguous run of column pairs — the plate reads as solid blocks, which is what makes hand pipetting quick. `Scatter` randomises which well pair a sample lands in, breaking up row/column position effects too; use it once a robot is doing the work, since a machine does not care about layout. `Sequential` fills A1→H10 in deal order, leaving groups interleaved. |
 | **Random seed** | Every random choice comes from this seed, so the same inputs always produce the same layout. Written to the Design Log sheet. |
 | **Replicates per sample** | 2 = side-by-side duplicate (40 samples/plate), 1 = singlet (80 samples/plate). |
 | **Keep subjects whole** | All samples from one `subject_id` (e.g. longitudinal draws) land on the same plate, so within-subject comparisons are never split across a batch. |
@@ -43,8 +43,12 @@ can be modelled rather than a confounder.
 5. **Deal.** Plates are cut into windows of N. Within a window each unit goes to the
    plate currently holding the least of its group, then the least-loaded plate overall,
    with a seeded coin-flip breaking exact ties. When a window fills, the next one starts.
-6. **Placement.** Units are written into that plate's chunk list, shuffled beforehand in
-   scatter mode.
+6. **Placement.** Units are written into that plate's chunk list. This step decides
+   arrangement only — which plate a sample belongs to is already fixed by step 5, so
+   changing placement never disturbs the dither balance. In `ordered` mode the plate's
+   units are sorted by group and then by manifest order, so each group forms one solid
+   run down the column pairs and tubes are picked in rack order within it. In `scatter`
+   mode the chunk list is shuffled first.
 
 The preview shows the realised **group × plate cross-tab** with a per-group spread
 (min–max per plate) before anything is applied; nothing is written until *Apply*.

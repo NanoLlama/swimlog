@@ -934,7 +934,7 @@
 <div class="autofill-modal-overlay hidden" id="autofillOverlay">
   <div class="autofill-modal">
     <h2>⚡ Autofill Plates</h2>
-    <p>Only <strong>serum, CSF, and plasma</strong> samples are autofilled — mAbs, controls and other types stay manual. Each sample is laid down as a <strong>side-by-side duplicate</strong> in columns 1–10; columns 11–12 are left for controls. In <strong>dither</strong> mode every block of N consecutive plates receives a proportional share of each group, so group membership is not confounded with plate. Layouts are fully reproducible from the seed.</p>
+    <p>Only <strong>serum, CSF, and plasma</strong> samples are autofilled — mAbs, controls and other types stay manual. Each sample is laid down as a <strong>side-by-side duplicate</strong> in columns 1–10; columns 11–12 are left for controls. In <strong>dither</strong> mode every block of N consecutive plates receives a proportional share of each group, so group membership is not confounded with plate. <strong>Well placement</strong> is a separate choice: keep groups in contiguous column blocks for hand pipetting, or scatter them once a robot is doing the work. Layouts are fully reproducible from the seed.</p>
     <div class="dither-controls">
       <div class="dither-field">
         <label for="layoutMode">Layout mode</label>
@@ -958,10 +958,11 @@
       <div class="dither-field">
         <label for="wellOrder">Well placement within plate</label>
         <select id="wellOrder" onchange="autofillOptionChanged()">
+          <option value="grouped">Ordered — groups in contiguous column blocks</option>
           <option value="scatter">Scatter — randomise well pairs</option>
-          <option value="sequential">Sequential — fill A1→H10 in order</option>
+          <option value="sequential">Sequential — deal order, A1→H10</option>
         </select>
-        <span class="hint">Scatter also breaks up row/column position effects.</span>
+        <span class="hint" id="wellOrderHint"></span>
       </div>
       <div class="dither-field">
         <label for="ditherSeed">Random seed</label>
@@ -1661,7 +1662,7 @@ function buildUnits(list, keepSubjectTogether, groupField) {
   if (!keepSubjectTogether) {
     return list.map(s => ({
       id: s.tiu_id, label: s.input_id, subject_id: s.subject_id,
-      group: groupKeyOf(s, groupField), samples: [s]
+      group: groupKeyOf(s, groupField), samples: [s], order: s.rowIdx
     }));
   }
   const bySubject = {};
@@ -1670,12 +1671,12 @@ function buildUnits(list, keepSubjectTogether, groupField) {
     const sid = String(s.subject_id || '').trim();
     if (!sid) {
       out.push({ id: s.tiu_id, label: s.input_id, subject_id: '',
-                 group: groupKeyOf(s, groupField), samples: [s] });
+                 group: groupKeyOf(s, groupField), samples: [s], order: s.rowIdx });
       return;
     }
     if (!bySubject[sid]) {
       bySubject[sid] = { id: 'SUBJ:' + sid, label: sid, subject_id: sid,
-                         group: groupKeyOf(s, groupField), samples: [] };
+                         group: groupKeyOf(s, groupField), samples: [], order: s.rowIdx };
       out.push(bySubject[sid]);
     }
     bySubject[sid].samples.push(s);
@@ -1861,6 +1862,23 @@ function computeAutofillPlan(opts) {
     });
   }
 
+  // ── Ordered grouping ────────────────────────────────────────────────────────
+  // Which plate a unit lands on is already fixed above — dithering is untouched.
+  // This only decides the arrangement *within* each plate: groups become solid
+  // runs down the column pairs, in manifest order inside each group, so the
+  // bench can lay a plate out group by group instead of hunting tube by tube.
+  if (opts.wellOrder === 'grouped') {
+    const rank = {};
+    groupNames.forEach((g, i) => { rank[g] = i; });
+    platePool.forEach(p => {
+      plateUnits[p].sort((a, b) =>
+        (rank[a.group] - rank[b.group]) ||
+        (a.order - b.order) ||
+        String(a.label).localeCompare(String(b.label))
+      );
+    });
+  }
+
   // ── Units → wells ───────────────────────────────────────────────────────────
   const plan = {};
   const platesUsed = [];
@@ -1898,12 +1916,24 @@ function openAutofillModal() {
   win.max = Math.max(1, totalPlates);
   if (!win.dataset.touched) win.value = Math.min(4, Math.max(1, totalPlates));
   onLayoutModeChange();
+  onWellOrderChange();
   document.getElementById('autofillOverlay').classList.remove('hidden');
 }
 
 function closeAutofillModal() {
   document.getElementById('autofillOverlay').classList.add('hidden');
   autofillPlan = null;
+}
+
+const WELL_ORDER_HINTS = {
+  grouped: 'Each group fills consecutive column pairs — easiest to pipette by hand.',
+  scatter: 'Randomises position too. Best once a robot is doing the pipetting.',
+  sequential: 'Wells filled in deal order, so groups stay interleaved down the plate.'
+};
+
+function onWellOrderChange() {
+  const el = document.getElementById('wellOrderHint');
+  if (el) el.textContent = WELL_ORDER_HINTS[document.getElementById('wellOrder').value] || '';
 }
 
 function onLayoutModeChange() {
@@ -1916,6 +1946,7 @@ function onLayoutModeChange() {
 }
 
 function autofillOptionChanged() {
+  onWellOrderChange();
   autofillPlan = null;
   document.getElementById('applyAutofillBtn').disabled = true;
   document.getElementById('autofillPreview').innerHTML =
@@ -1947,7 +1978,8 @@ function previewAutofill() {
   const head = [];
   head.push(`<strong>${res.sampleCount}</strong> sample(s) in <strong>${res.unitCount}</strong> unit(s) → <strong>${res.platesUsed.length}</strong> plate(s)`);
   head.push(`Mode: <strong>${opts.mode === 'dither' ? `dither across ${res.effectiveWindow} plate(s)` : 'block fill'}</strong> · Group by: <strong>${escHtml(groupLabel)}</strong>`);
-  head.push(`${wellsPer === 2 ? 'Side-by-side duplicates' : wellsPer + ' well(s)/sample'} · Wells: <strong>${opts.wellOrder === 'scatter' ? 'scattered' : 'sequential'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
+  const wellOrderLabel = { grouped: 'grouped in column blocks', scatter: 'scattered', sequential: 'sequential' }[opts.wellOrder] || opts.wellOrder;
+  head.push(`${wellsPer === 2 ? 'Side-by-side duplicates' : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
   if (opts.keepSubjectTogether) head.push('Subjects kept whole: every sample from one subject lands on the same plate.');
 
   // ── Group × plate cross-tab ─────────────────────────────────────────────────
@@ -2155,7 +2187,9 @@ function buildDesignLogSheet() {
   rows.push(['Dither window (plates)', o.mode === 'dither' ? m.effectiveWindow : 'n/a']);
   rows.push(['Group / stratify by', groupLabel]);
   rows.push(['Replicates per sample', o.replicates]);
-  rows.push(['Well placement', o.wellOrder === 'scatter' ? 'Scattered (seeded)' : 'Sequential']);
+  rows.push(['Well placement', { grouped: 'Ordered — groups in contiguous column blocks',
+                                 scatter: 'Scattered (seeded)',
+                                 sequential: 'Sequential (deal order)' }[o.wellOrder] || o.wellOrder]);
   rows.push(['Random seed', String(o.seed)]);
   rows.push(['Subjects kept whole', o.keepSubjectTogether ? 'yes' : 'no']);
   rows.push(['Samples auto-placed', m.sampleCount]);
