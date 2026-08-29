@@ -784,6 +784,17 @@
   .autofill-preview .pv-notes { color: var(--muted); line-height: 1.7; }
   .autofill-preview .warn { color: var(--accent2); }
 
+  .mixed-flag {
+    background: #c8a96e;
+    color: #fff;
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    padding: 1px 5px;
+    border-radius: 2px;
+    margin-left: 4px;
+  }
+
   .hidden { display: none !important; }
 </style>
 </head>
@@ -1928,8 +1939,23 @@ function computeAutofillPlan(opts) {
   if (opts.wellOrder === 'grouped') {
     const rank = {};
     groupNames.forEach((g, i) => { rank[g] = i; });
+    // Sample type is the outer key: different types need different bench prep,
+    // so a plate must never interleave them. Within a type the groups stay in
+    // their own contiguous runs, so a type-uniform cohort looks exactly as it
+    // did before this ordering existed.
+    const typeRank = {};
+    let ti = 0;
+    eligible.forEach(s => {
+      const t = s.sample_type || '';
+      if (!(t in typeRank)) typeRank[t] = ti++;
+    });
+    const typeOf = u => {
+      const t = (u.samples[0] && u.samples[0].sample_type) || '';
+      return t in typeRank ? typeRank[t] : 999;
+    };
     platePool.forEach(p => {
       plateUnits[p].sort((a, b) =>
+        (typeOf(a) - typeOf(b)) ||
         (rank[a.group] - rank[b.group]) ||
         (a.order - b.order) ||
         String(a.label).localeCompare(String(b.label))
@@ -2177,7 +2203,11 @@ function updatePlateProgress() {
   const filled = Object.keys(assignments).length;
   const pct = (filled / 96) * 100;
   document.getElementById('progressFill').style.width = pct + '%';
-  document.getElementById('plateStats').textContent = `${filled} / 96 wells assigned (${Math.round(pct)}%)`;
+  const comp = plateComposition(currentPlate);
+  const stats = document.getElementById('plateStats');
+  stats.innerHTML = `${filled} / 96 wells assigned (${Math.round(pct)}%)` +
+    (comp.total > 0 ? ` · <span style="color:var(--muted)">${comp.summary}</span>` : '') +
+    (comp.mixed ? ` <span class="mixed-flag">MIXED PREP</span>` : '');
 }
 
 function updateStats() {
@@ -2296,6 +2326,14 @@ function buildDesignLogSheet() {
   });
   rows.push(['Wells used (cols 1-10)', ...m.platesUsed.map(p => m.used[p] * o.replicates), '']);
 
+  rows.push([]);
+  rows.push(['Sample types per plate (wells)']);
+  rows.push(['Plate', 'Composition', 'Mixed prep?']);
+  for (let p = 1; p <= totalPlates; p++) {
+    const c = plateComposition(p);
+    if (c.total > 0) rows.push([`Plate ${p}`, c.summary, c.mixed ? 'YES — wells tagged' : 'no']);
+  }
+
   if (m.unplaced.length) {
     rows.push([]);
     rows.push(['Unplaced — not enough plate capacity']);
@@ -2303,6 +2341,30 @@ function buildDesignLogSheet() {
   }
 
   return XLSX.utils.aoa_to_sheet(rows);
+}
+
+// What sample types sit on a plate, counted in wells (the unit the grid is in).
+// "Mixed prep" is judged on non-control types only: assay controls and mAbs
+// always differ from the samples and live in their own reserved columns, so
+// their presence alone should not make every plate read as mixed.
+function plateComposition(p) {
+  const assignments = plateAssignments[p] || {};
+  const counts = {};
+  const prep = new Set();
+  Object.values(assignments).forEach(a => {
+    const s = samples.find(x => x.input_id === a.input_id);
+    const t = (s && s.sample_type) || 'unspecified';
+    counts[t] = (counts[t] || 0) + 1;
+    if (!(s && isAnyControl(s))) prep.add(t);
+  });
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  return {
+    entries,
+    total: entries.reduce((a, e) => a + e[1], 0),
+    mixed: prep.size > 1,
+    prepTypes: [...prep],
+    summary: entries.map(e => `${e[0]} ${e[1]} wells`).join(', ')
+  };
 }
 
 function buildPlateSheet(field) {
@@ -2346,10 +2408,27 @@ function buildPlateSheet(field) {
     });
   }
 
+  const isLab = field === 'input_id';
+
   for (let p = 1; p <= totalPlates; p++) {
     const assignments = plateAssignments[p] || {};
     const labelRow = plateStartRows[p];
     if (labelRow === undefined) continue;
+
+    // State the plate's composition in its label row. The leading "PLATE n"
+    // is preserved so the file still re-imports (plate detection reads the
+    // first number on the row).
+    const comp = plateComposition(p);
+    if (isLab && comp.total > 0) {
+      data[labelRow] = data[labelRow] || [];
+      data[labelRow][0] = `PLATE ${p}` +
+        (comp.mixed ? ' - MIXED PREP - ' : ' - ') + comp.summary;
+    }
+
+    // Only the Lab tab gets per-well type tags, and only where a plate really
+    // carries more than one prep type. Analysis Plate Maps stays pure tiu_id
+    // so downstream analysis keeps matching on an exact identifier.
+    const tagWells = isLab && comp.mixed;
 
     ROWS.forEach((row, ri) => {
       COLS.forEach((col, ci) => {
@@ -2365,6 +2444,9 @@ function buildPlateSheet(field) {
           const sObj = samples.find(x => x.input_id === assignment.input_id);
           if (sObj && isAnyControl(sObj) && controlMultiPlate[assignment.input_id] && controlMultiPlate[assignment.input_id].size > 1) {
             val = `${val}-P${p}`;
+          }
+          if (tagWells) {
+            val = `${val} [${(sObj && sObj.sample_type) || 'unspecified'}]`;
           }
           data[dataRow][dataCol] = val;
         } else {

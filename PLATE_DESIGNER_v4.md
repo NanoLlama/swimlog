@@ -58,11 +58,34 @@ can be modelled rather than a confounder.
 The preview shows the realised **group × plate cross-tab** with a per-group spread
 (min–max per plate) before anything is applied; nothing is written until *Apply*.
 
+## Mixed sample types
+
+Different sample types need different prep, so the tool treats a mixed plate as a
+condition worth flagging rather than a detail to look up.
+
+`plateComposition()` counts wells per `sample_type` on a plate. A plate is **mixed**
+when more than one *non-control* type is present — assay controls and mAbs are
+excluded from that test, since they always differ from the samples and occupy the
+reserved columns 11–12, and counting them would make every plate read as mixed.
+
+Three consequences:
+
+1. In ordered well placement, sample type sorts ahead of group, so each type forms a
+   contiguous block of wells.
+2. The Lab Plate Maps `PLATE n` label gains the composition, prefixed `MIXED PREP`
+   where it applies. The label still begins with `PLATE n` and the plate number is
+   still the first integer on the row, so plate detection on re-import is unaffected.
+3. On a mixed plate only, every Lab Plate Maps cell is suffixed with its type in
+   square brackets — `SER-001 [serum]`. Uniform plates are left untagged.
+
+Analysis Plate Maps is excluded from 2 and 3 on purpose: it is the machine-read tab,
+so its cells stay bare `tiu_id` values and its headers stay plain `PLATE n`.
+
 ## Export
 
 Existing sheets are unchanged. A **Design Log** sheet is added when an autofill plan was
 applied, recording mode, group variable, window size, seed, replicate count, subject
-handling, plates used, and the group × plate composition — enough to reproduce the
+handling, plates used, the group × plate composition, and the sample types on each plate — enough to reproduce the
 layout exactly and to describe it in a methods section.
 
 ## Template
