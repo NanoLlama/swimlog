@@ -81,11 +81,38 @@ Three consequences:
 Analysis Plate Maps is excluded from 2 and 3 on purpose: it is the machine-read tab,
 so its cells stay bare `tiu_id` values and its headers stay plain `PLATE n`.
 
+## Repeated samples
+
+`repeatSpec()` reads the optional `repeat_across_plates` column: `all`/`yes`/`true`
+for every plate, or a list like `1,3,5`. Such samples are held out of the ordinary
+dealing pool and placed once per target plate, before anything else, each pinned to a
+fixed slot index so it lands in the same well on every plate — where the plate's own
+geometry allows, since a plate with a different control area has a different first
+free well. Plate-count arithmetic subtracts the bridging load from each plate's
+capacity before deciding how many plates the run needs.
+
+They remain available in the sample list after placement (like controls), and report
+under their own `↻ bridging (repeated)` row so a cohort's per-plate count stays true.
+
+On export, **any** identifier appearing on more than one plate takes a `-Pn` suffix,
+on both the Lab and Analysis tabs — two plates means two wells and two measurements.
+Single-plate samples are untouched.
+
+## Control area
+
+`reservedOn(plate)` returns the plate's explicit well set if one was defined,
+otherwise the run-wide default of columns 11–12 when the toolbar checkbox is on. The
+canonical slot list spans all six column pairs, so what a run may use is decided
+entirely by the reservation rather than being hardcoded — freeing columns 11–12 on a
+plate raises its capacity from 40 to 48 duplicated samples. `buildFreeChunks()`
+excludes both assigned and reserved wells, so autofill can never write into a control
+area, and manual assignment there is still limited to `assay control` samples.
+
 ## Export
 
 Existing sheets are unchanged. A **Design Log** sheet is added when an autofill plan was
 applied, recording mode, group variable, window size, seed, replicate count, subject
-handling, plates used, the group × plate composition, and the sample types on each plate — enough to reproduce the
+handling, plates used, the group × plate composition, and the sample types and control area of each plate — enough to reproduce the
 layout exactly and to describe it in a methods section.
 
 ## Template

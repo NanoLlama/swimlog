@@ -784,6 +784,17 @@
   .autofill-preview .pv-notes { color: var(--muted); line-height: 1.7; }
   .autofill-preview .warn { color: var(--accent2); }
 
+  .area-label { font-size: 11px; color: var(--text); }
+  .area-custom {
+    background: var(--accent3);
+    color: #fff;
+    font-family: 'DM Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
   .mixed-flag {
     background: #c8a96e;
     color: #fff;
@@ -866,10 +877,20 @@
 
         <!-- V3 Toolbar -->
         <div class="v3-toolbar">
-          <label class="toggle-wrap" title="Reserves columns 11 & 12 for assay controls only">
-            <input type="checkbox" id="lockControlCols" onchange="renderPlate()">
-            Lock cols 11–12 for assay controls
+          <label class="toggle-wrap" title="Default control area for every plate that has no area of its own">
+            <input type="checkbox" id="lockControlCols" onchange="renderPlate()" checked>
+            Reserve cols 11–12 for controls (default)
           </label>
+          <div class="divider"></div>
+          <span class="area-label">Control area —</span>
+          <span id="controlAreaLabel" class="area-label"></span>
+          <div class="quick-select" style="margin-left:2px;">
+            <button onclick="setReservedPreset('cols1112')" title="Reserve columns 11 and 12 on this plate">Cols 11–12</button>
+            <button onclick="setReservedPreset('rowsAB')" title="Reserve rows A and B on this plate">Rows A–B</button>
+            <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
+            <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
+            <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
+          </div>
           <div class="divider"></div>
           <button class="btn btn-ghost" style="font-size:12px;" onclick="openAutofillModal()">⚡ Autofill Plates</button>
         </div>
@@ -1109,7 +1130,8 @@ function loadSamples() {
     'tiu_id', 'input_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
     'subject_ethnicity', 'sample_type', 'volume_ml', 'collection_date',
     'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
-    'dither_group' // optional — an explicit stratification column
+    'dither_group',        // optional — an explicit stratification column
+    'repeat_across_plates' // optional — bridging samples run on several plates
   ];
   EXPECTED_COLS.forEach(col => {
     colIdx[col] = header.indexOf(col);
@@ -1152,6 +1174,7 @@ function loadSamples() {
       diagnosis: getVal(row, 'diagnosis'),
       notes: getVal(row, 'notes'),
       dither_group: getVal(row, 'dither_group'),
+      repeat_across_plates: getVal(row, 'repeat_across_plates'),
       rowIdx: i
     });
   }
@@ -1279,7 +1302,7 @@ function getAssignedTiuIds() {
 
 // Controls/mAbs can be placed on multiple plates — never hide them from the list
 function isSampleAvailable(s, assignedTiuIds) {
-  if (isAnyControl(s)) return true; // always available
+  if (isAnyControl(s) || isRepeating(s)) return true; // may go on several plates
   return !assignedTiuIds.has(s.tiu_id);
 }
 
@@ -1319,10 +1342,11 @@ function renderSampleList(filter = '') {
     const isActive = activeSample && activeSample.tiu_id === s.tiu_id;
     const isDup = duplicateIds.has(s.input_id + '|||' + s.sample_type);
     const isCtrl = isAnyControl(s);
-    const assignedOnPlates = isCtrl ? getControlPlateNums(s.input_id) : [];
+    const rep = isRepeating(s);
+    const assignedOnPlates = (isCtrl || rep) ? getPlateNumsFor(s.input_id) : [];
     const plateTag = assignedOnPlates.length > 0
       ? `<span style="font-size:9px;color:#8a6a00;margin-left:auto;">on P${assignedOnPlates.join(',')}</span>`
-      : '';
+      : (rep ? `<span style="font-size:9px;color:var(--accent3);margin-left:auto;">↻ bridging</span>` : '');
     return `<div class="sample-item ${isActive ? 'active' : ''}" onclick="selectSample('${s.tiu_id}')"
       style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}">
       <div style="display:flex;align-items:center;gap:6px;">
@@ -1338,18 +1362,6 @@ function renderSampleList(filter = '') {
       </div>
     </div>`;
   }).join('');
-}
-
-// Find which plates a control/mAb input_id has been placed on
-function getControlPlateNums(input_id) {
-  const plates = [];
-  for (let p = 1; p <= totalPlates; p++) {
-    const assignments = plateAssignments[p] || {};
-    if (Object.values(assignments).some(a => a.input_id === input_id)) {
-      plates.push(p);
-    }
-  }
-  return plates;
 }
 
 function buildAssignSelect() {
@@ -1378,8 +1390,87 @@ function selectSample(tiu_id) {
 }
 
 // ─── Plate Grid ──────────────────────────────────────────────────────────────
-function isControlCol(col) {
-  return document.getElementById('lockControlCols').checked && (col === 11 || col === 12);
+// ─── Control area ─────────────────────────────────────────────────────────────
+// Wells set aside for controls. A plate uses its own explicit area when one has
+// been defined, otherwise the run-wide default of columns 11–12. Autofill never
+// touches reserved wells, and only control-type samples may be assigned there.
+let plateReserved = {}; // {plateNum: Set(wellKey)} — explicit per-plate override
+const DEFAULT_CONTROL_COLS = [11, 12];
+
+function defaultReservedSet() {
+  const set = new Set();
+  const box = document.getElementById('lockControlCols');
+  if (box && box.checked) {
+    DEFAULT_CONTROL_COLS.forEach(c => ROWS.forEach(r => set.add(`${r}${c}`)));
+  }
+  return set;
+}
+
+function reservedOn(plateNum) {
+  return plateReserved[plateNum] || defaultReservedSet();
+}
+
+function isReserved(plateNum, key) {
+  return reservedOn(plateNum).has(key);
+}
+
+// A column gets the CTRL badge only when every one of its wells is reserved
+function colFullyReserved(plateNum, col) {
+  const res = reservedOn(plateNum);
+  return ROWS.every(r => res.has(`${r}${col}`));
+}
+
+// Compact human description of a plate's control area, e.g. "cols 11–12" or
+// "rows A–B" or "9 wells"
+function describeReserved(plateNum) {
+  const res = reservedOn(plateNum);
+  if (res.size === 0) return 'none';
+  const fullCols = COLS.filter(c => ROWS.every(r => res.has(`${r}${c}`)));
+  const fullRows = ROWS.filter(r => COLS.every(c => res.has(`${r}${c}`)));
+  const covered = fullCols.length * ROWS.length + fullRows.length * COLS.length
+                - fullCols.length * fullRows.length;
+  if (covered === res.size && (fullCols.length || fullRows.length)) {
+    const parts = [];
+    if (fullCols.length) parts.push(`cols ${fullCols.join(',')}`);
+    if (fullRows.length) parts.push(`rows ${fullRows.join(',')}`);
+    return parts.join(' + ');
+  }
+  return `${res.size} wells`;
+}
+
+function setReservedFromSelection() {
+  if (selectedWells.size === 0) {
+    alert('Select the wells to reserve for controls first, then click "From selection".');
+    return;
+  }
+  const assignments = plateAssignments[currentPlate] || {};
+  const clash = [...selectedWells].filter(k => assignments[k]);
+  if (clash.length && !confirm(`${clash.length} selected well(s) already hold samples. Reserve anyway? Existing assignments are kept.`)) return;
+  plateReserved[currentPlate] = new Set(selectedWells);
+  selectedWells.clear();
+  renderPlate();
+}
+
+function setReservedPreset(kind) {
+  const set = new Set();
+  if (kind === 'cols1112') DEFAULT_CONTROL_COLS.forEach(c => ROWS.forEach(r => set.add(`${r}${c}`)));
+  else if (kind === 'rowsAB') ['A','B'].forEach(r => COLS.forEach(c => set.add(`${r}${c}`)));
+  plateReserved[currentPlate] = set;
+  selectedWells.clear();
+  renderPlate();
+}
+
+function clearReserved() {
+  delete plateReserved[currentPlate];
+  renderPlate();
+}
+
+function updateControlAreaLabel() {
+  const el = document.getElementById('controlAreaLabel');
+  if (!el) return;
+  const custom = !!plateReserved[currentPlate];
+  el.innerHTML = `Plate ${currentPlate}: <strong>${describeReserved(currentPlate)}</strong>` +
+    (custom ? ' <span class="area-custom">custom</span>' : ' <span style="color:var(--muted)">(default)</span>');
 }
 
 function isAssayControl(sample) {
@@ -1391,6 +1482,32 @@ function isAnyControl(sample) {
   if (!sample) return false;
   const t = (sample.sample_type || '').toLowerCase();
   return t === 'assay control' || t === 'control' || t === 'mab';
+}
+
+// A bridging sample runs on more than one plate — a highly reactive serum used
+// as an anchor, say. The manifest's repeat_across_plates column drives it:
+// "all"/"yes"/"true" for every plate in the run, or a list like "1,3,5".
+// Returns null, 'all', or an array of plate numbers.
+function repeatSpec(sample) {
+  if (!sample) return null;
+  const raw = String(sample.repeat_across_plates || '').trim();
+  if (!raw) return null;
+  const low = raw.toLowerCase();
+  if (low === 'all' || low === 'yes' || low === 'true' || low === 'y' || low === 'every') return 'all';
+  const nums = raw.split(/[,;\s]+/).map(x => parseInt(x, 10)).filter(n => Number.isFinite(n) && n > 0);
+  return nums.length ? [...new Set(nums)].sort((a, b) => a - b) : 'all';
+}
+
+function isRepeating(sample) { return repeatSpec(sample) !== null; }
+
+// Which plates a sample currently sits on
+function getPlateNumsFor(input_id) {
+  const plates = [];
+  for (let p = 1; p <= totalPlates; p++) {
+    const assignments = plateAssignments[p] || {};
+    if (Object.values(assignments).some(a => a.input_id === input_id)) plates.push(p);
+  }
+  return plates;
 }
 
 // Only serum, CSF, and plasma are autofilled; everything else is manual
@@ -1411,7 +1528,7 @@ function renderPlate() {
 
   // Column headers — add CTRL badge above 11 & 12 when locked
   COLS.forEach(c => {
-    const locked = isControlCol(c);
+    const locked = colFullyReserved(currentPlate, c);
     const el = document.createElement('div');
     el.className = 'col-header';
     el.style.position = 'relative';
@@ -1429,7 +1546,7 @@ function renderPlate() {
       const key = `${row}${col}`;
       const assigned = assignments[key];
       const isSelected = selectedWells.has(key);
-      const locked = isControlCol(col) && !assigned;
+      const locked = isReserved(currentPlate, key) && !assigned;
       const assignedSampleObj = assigned ? samples.find(s => s.input_id === assigned.input_id) : null;
       const isCtrlAssigned = assigned && isAssayControl(assignedSampleObj);
 
@@ -1442,7 +1559,7 @@ function renderPlate() {
       div.dataset.well = key;
 
       if (assigned) {
-        const isCtrl = assignedSampleObj && isAnyControl(assignedSampleObj);
+        const isCtrl = assignedSampleObj && (isAnyControl(assignedSampleObj) || isRepeating(assignedSampleObj));
         const color = isCtrlAssigned ? '#8a6a00' : (sampleColorMap[assigned.input_id] || '#4fb8ff');
         div.style.background = hexToRgba(color, isCtrlAssigned ? 0.15 : 0.2);
         div.style.borderColor = color;
@@ -1450,15 +1567,15 @@ function renderPlate() {
         // Show plate suffix for controls placed on multiple plates
         const label = assigned.input_id.substring(0, 6);
         if (isCtrl) {
-          const ctrlPlates = getControlPlateNums(assigned.input_id);
-          div.textContent = ctrlPlates.length > 1 ? `${label}-P${currentPlate}` : label;
+          const onPlates = getPlateNumsFor(assigned.input_id);
+          div.textContent = onPlates.length > 1 ? `${label}-P${currentPlate}` : label;
         } else {
           div.textContent = assigned.input_id.substring(0, 4);
         }
       }
 
       if (locked) {
-        div.title = 'Reserved for assay controls — lock columns 11–12 checkbox active';
+        div.title = 'Reserved for controls on this plate';
       }
 
       div.addEventListener('click', () => { if (!assigned && !locked) toggleWell(key); });
@@ -1473,6 +1590,7 @@ function renderPlate() {
   updateSelectionBanner();
   updateAssignmentList();
   updatePlateProgress();
+  updateControlAreaLabel();
 }
 
 function makeEl(tag, cls, text) {
@@ -1504,7 +1622,7 @@ function selectAll() {
   const assignments = plateAssignments[currentPlate] || {};
   ROWS.forEach(r => COLS.forEach(c => {
     const key = `${r}${c}`;
-    if (!assignments[key] && !isControlCol(c)) selectedWells.add(key);
+    if (!assignments[key] && !isReserved(currentPlate, key)) selectedWells.add(key);
   }));
   renderPlate();
 }
@@ -1518,7 +1636,7 @@ function selectEmpty() {
   const assignments = plateAssignments[currentPlate] || {};
   ROWS.forEach(r => COLS.forEach(c => {
     const key = `${r}${c}`;
-    if (!assignments[key] && !isControlCol(c)) selectedWells.add(key);
+    if (!assignments[key] && !isReserved(currentPlate, key)) selectedWells.add(key);
   }));
   renderPlate();
 }
@@ -1527,17 +1645,16 @@ function selectRow(row) {
   const assignments = plateAssignments[currentPlate] || {};
   COLS.forEach(c => {
     const key = `${row}${c}`;
-    if (!assignments[key] && !isControlCol(c)) selectedWells.add(key);
+    if (!assignments[key] && !isReserved(currentPlate, key)) selectedWells.add(key);
   });
   renderPlate();
 }
 
 function selectCol(col) {
   const assignments = plateAssignments[currentPlate] || {};
-  if (isControlCol(col)) return;
   ROWS.forEach(r => {
     const key = `${r}${col}`;
-    if (!assignments[key]) selectedWells.add(key);
+    if (!assignments[key] && !isReserved(currentPlate, key)) selectedWells.add(key);
   });
   renderPlate();
 }
@@ -1554,14 +1671,13 @@ function assignSelected() {
   const sampleIsCtrl = isAnyControl(sample);
   let skippedLocked = 0;
   selectedWells.forEach(key => {
-    const col = parseInt(key.slice(1));
-    const locked = isControlCol(col);
+    const locked = isReserved(currentPlate, key);
     if (locked && !sampleIsAssayCtrl) { skippedLocked++; return; }
     if (!plateAssignments[currentPlate][key]) {
       plateAssignments[currentPlate][key] = { input_id: sample.input_id, tiu_id: sample.tiu_id };
     }
   });
-  if (skippedLocked > 0) alert(`${skippedLocked} well(s) in columns 11–12 were skipped — only "assay control" samples can be assigned there.`);
+  if (skippedLocked > 0) alert(`${skippedLocked} reserved well(s) were skipped — only "assay control" samples can be assigned to the control area.`);
 
   selectedWells.clear();
   renderPlate();
@@ -1600,8 +1716,9 @@ function changePlate(dir) {
 
 // ─── Autofill Logic ───────────────────────────────────────────────────────────
 // Column pairs for duplicate side-by-side filling
-const SAMPLE_COL_PAIRS = [[1,2],[3,4],[5,6],[7,8],[9,10]]; // 5 pairs = 40 unique slots/plate
-const CONTROL_COLS = [11, 12];
+// Every column pair on the plate. Which of them a run may actually use is
+// decided per plate by the control area, not fixed here.
+const SAMPLE_COL_PAIRS = [[1,2],[3,4],[5,6],[7,8],[9,10],[11,12]];
 
 // Slot order: vertical within each column pair
 // A1+A2, B1+B2, C1+C2 ... H1+H2, then A3+A4, B3+B4 ...
@@ -1616,10 +1733,8 @@ function getSampleSlots() {
   return slots; // 80 slots per plate
 }
 
-function getControlSlots() {
-  const slots = [];
-  CONTROL_COLS.forEach(c => ROWS.forEach(r => slots.push(`${r}${c}`)));
-  return slots;
+function getControlSlots(plateNum) {
+  return [...reservedOn(plateNum)];
 }
 
 // ─── Seeded PRNG ──────────────────────────────────────────────────────────────
@@ -1733,10 +1848,11 @@ function apportion(total, weights) {
 function buildFreeChunks(plateNum, replicates, wellOrder, rng) {
   const slots = getSampleSlots();
   const assigned = plateAssignments[plateNum] || {};
+  const reserved = reservedOn(plateNum);
   const chunks = [];
   for (let i = 0; i + replicates <= slots.length; i += replicates) {
     const c = slots.slice(i, i + replicates);
-    if (c.every(k => !assigned[k])) chunks.push(c);
+    if (c.every(k => !assigned[k] && !reserved.has(k))) chunks.push(c);
   }
   if (wellOrder === 'scatter') shuffleInPlace(chunks, rng);
   return chunks;
@@ -1765,14 +1881,18 @@ function computeAutofillPlan(opts) {
   const rng = makeRng(opts.seed);
   const assignedTiuIds = getAssignedTiuIds();
 
-  // Only serum, CSF and plasma are autofilled — controls/mAbs stay manual
-  const eligible = samples.filter(s => isAutofillable(s) && !assignedTiuIds.has(s.tiu_id));
+  // Only serum, CSF and plasma are autofilled — controls/mAbs stay manual.
+  // Bridging samples are held aside: they are placed once per target plate
+  // rather than dealt like an ordinary sample.
+  const autofillable = samples.filter(s => isAutofillable(s));
+  const bridging = autofillable.filter(s => isRepeating(s));
+  const eligible = autofillable.filter(s => !isRepeating(s) && !assignedTiuIds.has(s.tiu_id));
   const skippedTypes = [...new Set(
     samples.filter(s => !isAutofillable(s) && !assignedTiuIds.has(s.tiu_id))
       .map(s => s.sample_type || 'unknown')
   )];
 
-  if (eligible.length === 0) return { empty: true, skippedTypes };
+  if (eligible.length === 0 && bridging.length === 0) return { empty: true, skippedTypes };
 
   const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField);
 
@@ -1788,6 +1908,15 @@ function computeAutofillPlan(opts) {
   // dealt out as contiguous runs below, so shuffling is what makes a plate's
   // share of a group a random subset rather than a consecutive block.
   if (opts.sampleOrder === 'random') groupNames.forEach(g => shuffleInPlace(groupUnits[g], rng));
+
+  // Bridging samples are not dealt like the rest, but they still occupy wells,
+  // so they get their own row in the reporting rather than distorting a cohort's
+  // per-plate count.
+  const BRIDGE_GROUP = '↻ bridging (repeated)';
+  if (bridging.length) {
+    groupNames.push(BRIDGE_GROUP);
+    groupUnits[BRIDGE_GROUP] = []; // reporting only — never dealt from a queue
+  }
 
   // Capacity, in replicate chunks, of every plate
   const chunksByPlate = {}, capacity = {}, used = {}, groupCount = {}, plateUnits = {};
@@ -1837,10 +1966,45 @@ function computeAutofillPlan(opts) {
     // must not leave half-empty plates behind. Any plate beyond that is kept
     // in reserve as an overflow window.
     const demand = units.reduce((a, u) => a + u.samples.length, 0);
+    // A bridging sample eats one chunk on every plate it lands on, so the
+    // room left for ordinary samples — and therefore the plate count — has to
+    // account for it up front.
+    const bridgeLoad = p => bridging.filter(b => {
+      const spec = repeatSpec(b);
+      return spec === 'all' || spec.indexOf(p) >= 0;
+    }).length;
     let acc = 0, needed = 0;
-    for (const p of platePool) { if (acc >= demand) break; acc += capacity[p]; needed++; }
+    for (const p of platePool) {
+      if (acc >= demand) break;
+      acc += Math.max(0, capacity[p] - bridgeLoad(p));
+      needed++;
+    }
     needed = Math.max(1, needed);
+    // A plate named explicitly in repeat_across_plates is used even if the
+    // sample count alone would not have reached it
+    const explicit = bridging.reduce((mx, b) => {
+      const spec = repeatSpec(b);
+      return spec === 'all' ? mx : Math.max(mx, ...spec);
+    }, 0);
+    if (explicit > 0) {
+      const idx = platePool.indexOf(explicit);
+      if (idx >= 0) needed = Math.max(needed, idx + 1);
+    }
     const active = platePool.slice(0, needed);
+
+    // Place bridging samples first so they take the same well on every plate
+    active.forEach(p => {
+      bridging.forEach((b, bi) => {
+        const spec = repeatSpec(b);
+        if (spec !== 'all' && spec.indexOf(p) < 0) return;
+        const already = Object.values(plateAssignments[p] || {}).some(a => a.input_id === b.input_id);
+        if (already) return;
+        if (capacity[p] - used[p] < 1 || bi >= capacity[p]) return;
+        placeUnit(p, { id: b.tiu_id, label: b.input_id, subject_id: b.subject_id,
+                       group: BRIDGE_GROUP, samples: [b],
+                       order: -1, pinned: true, fixedChunk: bi });
+      });
+    });
     const reserve = platePool.slice(needed);
 
     const requested = parseInt(opts.windowSize, 10);
@@ -1955,6 +2119,7 @@ function computeAutofillPlan(opts) {
     };
     platePool.forEach(p => {
       plateUnits[p].sort((a, b) =>
+        ((a.pinned ? 0 : 1) - (b.pinned ? 0 : 1)) ||
         (typeOf(a) - typeOf(b)) ||
         (rank[a.group] - rank[b.group]) ||
         (a.order - b.order) ||
@@ -1970,18 +2135,32 @@ function computeAutofillPlan(opts) {
     if (plateUnits[p].length === 0) return;
     platesUsed.push(p);
     plan[p] = {};
+    const taken = new Set();
+    // Pinned units claim their fixed slot first — a bridging sample then sits
+    // in the same well on every plate, which is what makes it usable as an
+    // anchor at the bench and in the analysis.
+    plateUnits[p].forEach(u => {
+      if (u.fixedChunk == null) return;
+      const chunk = chunksByPlate[p][u.fixedChunk];
+      if (!chunk) return;
+      taken.add(u.fixedChunk);
+      chunk.forEach(k => { plan[p][k] = { input_id: u.samples[0].input_id, tiu_id: u.samples[0].tiu_id }; });
+    });
     let ci = 0;
     plateUnits[p].forEach(u => {
+      if (u.fixedChunk != null) return;
       u.samples.forEach(s => {
-        const chunk = chunksByPlate[p][ci++];
+        while (taken.has(ci)) ci++;
+        const chunk = chunksByPlate[p][ci];
         if (!chunk) return;
+        taken.add(ci);
         chunk.forEach(k => { plan[p][k] = { input_id: s.input_id, tiu_id: s.tiu_id }; });
       });
     });
   });
 
   return {
-    empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool,
+    empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging,
     platesUsed, capacity, used, unplaced, skippedTypes, windows, effectiveWindow,
     unitCount: units.length,
     sampleCount: eligible.length
@@ -2072,12 +2251,20 @@ function previewAutofill() {
   const wellOrderLabel = { grouped: 'grouped in column blocks', scatter: 'scattered', sequential: 'sequential' }[opts.wellOrder] || opts.wellOrder;
   head.push(`${wellsPer === 2 ? 'Side-by-side duplicates' : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Samples: <strong>${opts.sampleOrder === 'random' ? 'randomised' : 'manifest order'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
   if (opts.keepSubjectTogether) head.push('Subjects kept whole: every sample from one subject lands on the same plate.');
+  if (res.bridging && res.bridging.length) {
+    const names = res.bridging.map(b => {
+      const spec = repeatSpec(b);
+      return `${escHtml(b.input_id)} (${spec === 'all' ? 'every plate' : 'plates ' + spec.join(',')})`;
+    });
+    head.push(`↻ Bridging: <strong>${names.join(', ')}</strong> — repeated per plate, suffixed -P1, -P2, … on export.`);
+  }
 
   // ── Group × plate cross-tab ─────────────────────────────────────────────────
   const counts = {};
   res.groupNames.forEach(g => { counts[g] = {}; });
   res.platesUsed.forEach(p => {
     res.plateUnits[p].forEach(u => {
+      if (!counts[u.group]) counts[u.group] = {};
       counts[u.group][p] = (counts[u.group][p] || 0) + u.samples.length;
     });
   });
@@ -2131,7 +2318,8 @@ function previewAutofill() {
   if (res.skippedTypes.length) {
     notes.push(`⚠ Not auto-filled (place manually): ${escHtml(res.skippedTypes.join(', '))}`);
   }
-  notes.push('ℹ Cols 11–12 are never auto-filled — assign controls manually.');
+  const areas = [...new Set(res.platesUsed.map(p => describeReserved(p)))];
+  notes.push(`ℹ Control area is never auto-filled — assign controls manually. This run: ${escHtml(areas.join(' / '))}.`);
   notes.push('ℹ Already-assigned wells are preserved and skipped.');
 
   box.innerHTML =
@@ -2328,10 +2516,13 @@ function buildDesignLogSheet() {
 
   rows.push([]);
   rows.push(['Sample types per plate (wells)']);
-  rows.push(['Plate', 'Composition', 'Mixed prep?']);
+  rows.push(['Plate', 'Composition', 'Mixed prep?', 'Control area']);
   for (let p = 1; p <= totalPlates; p++) {
     const c = plateComposition(p);
-    if (c.total > 0) rows.push([`Plate ${p}`, c.summary, c.mixed ? 'YES — wells tagged' : 'no']);
+    if (c.total > 0) {
+      rows.push([`Plate ${p}`, c.summary, c.mixed ? 'YES — wells tagged' : 'no',
+                 describeReserved(p) + (plateReserved[p] ? ' (custom)' : '')]);
+    }
   }
 
   if (m.unplaced.length) {
@@ -2395,16 +2586,17 @@ function buildPlateSheet(field) {
     }
   });
 
-  // Pre-compute which controls appear on multiple plates for suffix
-  const controlMultiPlate = {};
+  // Any sample sitting on more than one plate — a control, or a bridging
+  // sample repeated for normalisation — must be distinguishable per plate, so
+  // it takes a -Pn suffix. This applies to BOTH tabs: the same identifier on
+  // two plates is two different physical wells and two different measurements,
+  // and downstream analysis has to be able to tell them apart.
+  const multiPlate = {};
   for (let p = 1; p <= totalPlates; p++) {
     const assignments = plateAssignments[p] || {};
     Object.values(assignments).forEach(a => {
-      const s = samples.find(x => x.input_id === a.input_id);
-      if (s && isAnyControl(s)) {
-        if (!controlMultiPlate[a.input_id]) controlMultiPlate[a.input_id] = new Set();
-        controlMultiPlate[a.input_id].add(p);
-      }
+      if (!multiPlate[a.input_id]) multiPlate[a.input_id] = new Set();
+      multiPlate[a.input_id].add(p);
     });
   }
 
@@ -2442,7 +2634,7 @@ function buildPlateSheet(field) {
           let val = assignment[field];
           // Append plate suffix for controls on multiple plates
           const sObj = samples.find(x => x.input_id === assignment.input_id);
-          if (sObj && isAnyControl(sObj) && controlMultiPlate[assignment.input_id] && controlMultiPlate[assignment.input_id].size > 1) {
+          if (multiPlate[assignment.input_id] && multiPlate[assignment.input_id].size > 1) {
             val = `${val}-P${p}`;
           }
           if (tagWells) {
