@@ -94,6 +94,14 @@ capacity before deciding how many plates the run needs.
 They remain available in the sample list after placement (like controls), and report
 under their own `↻ bridging (repeated)` row so a cohort's per-plate count stays true.
 
+Bridging can also be switched on per sample in the app, with the **↻** button on a
+sample card — `manualBridge` holds those `tiu_id`s. An app-bridged sample is never
+consumed from the pool, and is excluded from autofill entirely (both from the dealt
+pool and from automatic bridging placement) on the grounds that you are placing it
+by hand; the preview lists which samples that applies to. The **Show placed samples**
+checkbox reveals samples already on a plate, which is how an already-placed sample
+gets bridged after the fact.
+
 On export, **any** identifier appearing on more than one plate takes a `-Pn` suffix,
 on both the Lab and Analysis tabs — two plates means two wells and two measurements.
 Single-plate samples are untouched.
@@ -101,7 +109,9 @@ Single-plate samples are untouched.
 ## Control area
 
 `reservedOn(plate)` returns the plate's explicit well set if one was defined,
-otherwise the run-wide default of columns 11–12 when the toolbar checkbox is on. The
+otherwise the run-wide default of columns 11–12 when the toolbar checkbox is on.
+Presets cover columns 11–12 and none; any other shape comes from the current well
+selection. The
 canonical slot list spans all six column pairs, so what a run may use is decided
 entirely by the reservation rather than being hardcoded — freeing columns 11–12 on a
 plate raises its capacity from 40 to 48 duplicated samples. `buildFreeChunks()`

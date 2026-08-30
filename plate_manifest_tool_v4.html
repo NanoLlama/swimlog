@@ -784,6 +784,25 @@
   .autofill-preview .pv-notes { color: var(--muted); line-height: 1.7; }
   .autofill-preview .warn { color: var(--accent2); }
 
+  .bridge-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1;
+    padding: 2px 5px;
+    cursor: pointer;
+    z-index: 2;
+  }
+  .bridge-btn:hover { border-color: var(--accent3); color: var(--accent3); }
+  .bridge-btn.on { background: var(--accent3); border-color: var(--accent3); color: #fff; }
+
+  .sample-item { position: relative; padding-right: 28px; }
+
   .area-label { font-size: 11px; color: var(--text); }
   .area-custom {
     background: var(--accent3);
@@ -860,6 +879,11 @@
             </select>
           </div>
           <div class="search-box" style="border-bottom:1px solid var(--border);">
+            <label class="toggle-wrap" style="font-size:11px;font-weight:400;margin-bottom:8px;"
+                   title="Reveal samples already placed on a plate, so one can be marked for bridging after the fact">
+              <input type="checkbox" id="showAssigned" onchange="filterSamples()">
+              Show placed samples
+            </label>
             <select id="sampleTypeFilter" onchange="filterSamples()" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:5px; color:var(--text); font-family:'DM Sans',sans-serif; font-size:12px; padding:6px 10px; outline:none; cursor:pointer;">
               <option value="">All sample types</option>
             </select>
@@ -886,7 +910,6 @@
           <span id="controlAreaLabel" class="area-label"></span>
           <div class="quick-select" style="margin-left:2px;">
             <button onclick="setReservedPreset('cols1112')" title="Reserve columns 11 and 12 on this plate">Cols 11–12</button>
-            <button onclick="setReservedPreset('rowsAB')" title="Reserve rows A and B on this plate">Rows A–B</button>
             <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
             <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
             <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
@@ -1302,7 +1325,7 @@ function getAssignedTiuIds() {
 
 // Controls/mAbs can be placed on multiple plates — never hide them from the list
 function isSampleAvailable(s, assignedTiuIds) {
-  if (isAnyControl(s) || isRepeating(s)) return true; // may go on several plates
+  if (isAnyControl(s) || isBridged(s)) return true; // may go on several plates
   return !assignedTiuIds.has(s.tiu_id);
 }
 
@@ -1317,7 +1340,11 @@ function renderSampleList(filter = '') {
   const cohort = document.getElementById('cohortFilter').value;
   const sampleType = document.getElementById('sampleTypeFilter').value;
 
-  let visible = samples.filter(s => isSampleAvailable(s, assignedTiuIds));
+  const showAssignedBox = document.getElementById('showAssigned');
+  const showAssigned = showAssignedBox && showAssignedBox.checked;
+  let visible = samples.filter(s =>
+    isSampleAvailable(s, assignedTiuIds) || (showAssigned && assignedTiuIds.has(s.tiu_id))
+  );
 
   if (cohort) visible = visible.filter(s => s.cohort === cohort);
   if (sampleType) visible = visible.filter(s => s.sample_type === sampleType);
@@ -1341,14 +1368,19 @@ function renderSampleList(filter = '') {
     const color = sampleColorMap[s.input_id] || '#6b7494';
     const isActive = activeSample && activeSample.tiu_id === s.tiu_id;
     const isDup = duplicateIds.has(s.input_id + '|||' + s.sample_type);
+    const placed = assignedTiuIds.has(s.tiu_id);
+    const canBridge = !isAnyControl(s) && !isRepeating(s); // controls already repeat; manifest bridging is fixed
     const isCtrl = isAnyControl(s);
-    const rep = isRepeating(s);
+    const rep = isBridged(s);
     const assignedOnPlates = (isCtrl || rep) ? getPlateNumsFor(s.input_id) : [];
     const plateTag = assignedOnPlates.length > 0
       ? `<span style="font-size:9px;color:#8a6a00;margin-left:auto;">on P${assignedOnPlates.join(',')}</span>`
       : (rep ? `<span style="font-size:9px;color:var(--accent3);margin-left:auto;">↻ bridging</span>` : '');
     return `<div class="sample-item ${isActive ? 'active' : ''}" onclick="selectSample('${s.tiu_id}')"
-      style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}">
+      style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}${placed && !rep ? 'opacity:0.62;' : ''}">
+      ${canBridge ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}"
+        onclick="toggleBridge('${s.tiu_id}', event)"
+        title="${isManualBridge(s) ? 'Bridging on — stays in the pool for other plates. Click to turn off.' : 'Bridge this sample: keep it in the pool so it can go on more plates.'}">↻</button>` : ''}
       <div style="display:flex;align-items:center;gap:6px;">
         <span class="swatch" style="background:${color}; border-radius:50%;"></span>
         <span class="input-id">${s.input_id || '<em style="color:var(--muted)">No input_id</em>'}</span>
@@ -1454,8 +1486,7 @@ function setReservedFromSelection() {
 function setReservedPreset(kind) {
   const set = new Set();
   if (kind === 'cols1112') DEFAULT_CONTROL_COLS.forEach(c => ROWS.forEach(r => set.add(`${r}${c}`)));
-  else if (kind === 'rowsAB') ['A','B'].forEach(r => COLS.forEach(c => set.add(`${r}${c}`)));
-  plateReserved[currentPlate] = set;
+  plateReserved[currentPlate] = set; // 'none' leaves the set empty
   selectedWells.clear();
   renderPlate();
 }
@@ -1499,6 +1530,23 @@ function repeatSpec(sample) {
 }
 
 function isRepeating(sample) { return repeatSpec(sample) !== null; }
+
+// Bridging can also be switched on in the app, for a sample the manifest did
+// not mark. Such a sample is never consumed from the pool — you place it on
+// whichever plates you choose — and autofill leaves it alone.
+let manualBridge = new Set(); // tiu_id
+
+function isManualBridge(sample) { return !!sample && manualBridge.has(sample.tiu_id); }
+function isBridged(sample) { return isRepeating(sample) || isManualBridge(sample); }
+
+function toggleBridge(tiu_id, ev) {
+  if (ev) ev.stopPropagation();
+  if (manualBridge.has(tiu_id)) manualBridge.delete(tiu_id);
+  else manualBridge.add(tiu_id);
+  renderPlate();
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  buildAssignSelect();
+}
 
 // Which plates a sample currently sits on
 function getPlateNumsFor(input_id) {
@@ -1559,7 +1607,7 @@ function renderPlate() {
       div.dataset.well = key;
 
       if (assigned) {
-        const isCtrl = assignedSampleObj && (isAnyControl(assignedSampleObj) || isRepeating(assignedSampleObj));
+        const isCtrl = assignedSampleObj && (isAnyControl(assignedSampleObj) || isBridged(assignedSampleObj));
         const color = isCtrlAssigned ? '#8a6a00' : (sampleColorMap[assigned.input_id] || '#4fb8ff');
         div.style.background = hexToRgba(color, isCtrlAssigned ? 0.15 : 0.2);
         div.style.borderColor = color;
@@ -1886,13 +1934,16 @@ function computeAutofillPlan(opts) {
   // rather than dealt like an ordinary sample.
   const autofillable = samples.filter(s => isAutofillable(s));
   const bridging = autofillable.filter(s => isRepeating(s));
-  const eligible = autofillable.filter(s => !isRepeating(s) && !assignedTiuIds.has(s.tiu_id));
+  const manualHeld = autofillable.filter(s => !isRepeating(s) && isManualBridge(s));
+  const eligible = autofillable.filter(s =>
+    !isRepeating(s) && !isManualBridge(s) && !assignedTiuIds.has(s.tiu_id)
+  );
   const skippedTypes = [...new Set(
     samples.filter(s => !isAutofillable(s) && !assignedTiuIds.has(s.tiu_id))
       .map(s => s.sample_type || 'unknown')
   )];
 
-  if (eligible.length === 0 && bridging.length === 0) return { empty: true, skippedTypes };
+  if (eligible.length === 0 && bridging.length === 0) return { empty: true, skippedTypes, manualHeld };
 
   const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField);
 
@@ -2160,7 +2211,7 @@ function computeAutofillPlan(opts) {
   });
 
   return {
-    empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging,
+    empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging, manualHeld,
     platesUsed, capacity, used, unplaced, skippedTypes, windows, effectiveWindow,
     unitCount: units.length,
     sampleCount: eligible.length
@@ -2320,6 +2371,9 @@ function previewAutofill() {
   }
   const areas = [...new Set(res.platesUsed.map(p => describeReserved(p)))];
   notes.push(`ℹ Control area is never auto-filled — assign controls manually. This run: ${escHtml(areas.join(' / '))}.`);
+  if (res.manualHeld && res.manualHeld.length) {
+    notes.push(`↻ ${res.manualHeld.length} sample(s) marked for bridging in the app are left out of autofill — place them by hand: ${escHtml(res.manualHeld.map(s => s.input_id).join(', '))}`);
+  }
   notes.push('ℹ Already-assigned wells are preserved and skipped.');
 
   box.innerHTML =
@@ -2493,6 +2547,9 @@ function buildDesignLogSheet() {
                                  sequential: 'Sequential (deal order)' }[o.wellOrder] || o.wellOrder]);
   rows.push(['Random seed', String(o.seed)]);
   rows.push(['Subjects kept whole', o.keepSubjectTogether ? 'yes' : 'no']);
+  if (m.manualHeld && m.manualHeld.length) {
+    rows.push(['Bridged in app (placed by hand)', m.manualHeld.map(s => s.input_id).join(', ')]);
+  }
   rows.push(['Samples auto-placed', m.sampleCount]);
   rows.push(['Units dealt', m.unitCount]);
   rows.push(['Plates used', m.platesUsed.join(', ')]);
