@@ -58,6 +58,19 @@ can be modelled rather than a confounder.
 The preview shows the realised **group × plate cross-tab** with a per-group spread
 (min–max per plate) before anything is applied; nothing is written until *Apply*.
 
+## Prefilling
+
+`buildFreeChunks()` reads the live `plateAssignments`, so hand-placed wells simply do
+not appear as free chunks, and `eligible` excludes any sample already on a plate.
+Autofill therefore composes with manual placement in any order, and `applyAutofill()`
+merges rather than replaces.
+
+Because chunks are cut from the canonical pair order and kept only when *every* well
+in them is free, occupying one half of a pair makes the other half unreachable —
+filling it would break the side-by-side duplicate invariant. `strandedWells()` finds
+those wells and the preview reports them per plate rather than letting the capacity
+disappear silently.
+
 ## Mixed sample types
 
 Different sample types need different prep, so the tool treats a mixed plate as a

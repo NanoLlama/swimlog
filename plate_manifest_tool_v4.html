@@ -1906,6 +1906,23 @@ function buildFreeChunks(plateNum, replicates, wellOrder, rng) {
   return chunks;
 }
 
+// Free wells autofill cannot reach because their pair partner is taken. Filling
+// one would put two different samples in a column pair, breaking the promise
+// that neighbouring wells are duplicates of each other — so they are left empty
+// on purpose, and reported rather than silently lost.
+function strandedWells(plateNum, replicates) {
+  const slots = getSampleSlots();
+  const assigned = plateAssignments[plateNum] || {};
+  const reserved = reservedOn(plateNum);
+  const out = [];
+  for (let i = 0; i + replicates <= slots.length; i += replicates) {
+    const chunk = slots.slice(i, i + replicates);
+    const free = chunk.filter(k => !assigned[k] && !reserved.has(k));
+    if (free.length > 0 && free.length < chunk.length) out.push(...free);
+  }
+  return out;
+}
+
 // ─── Planner ──────────────────────────────────────────────────────────────────
 let autofillPlan = null;
 let lastPlanMeta = null;   // parameters of the plan currently previewed
@@ -1980,6 +1997,12 @@ function computeAutofillPlan(opts) {
   }
 
   const unplaced = [];
+  const stranded = {};
+  platePool.concat(Object.keys(plateAssignments).map(Number)).forEach(p => {
+    if (stranded[p]) return;
+    const sw = strandedWells(p, opts.replicates);
+    if (sw.length) stranded[p] = sw;
+  });
 
   function placeUnit(p, u) {
     plateUnits[p].push(u);
@@ -2211,7 +2234,7 @@ function computeAutofillPlan(opts) {
   });
 
   return {
-    empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging, manualHeld,
+    empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging, manualHeld, stranded,
     platesUsed, capacity, used, unplaced, skippedTypes, windows, effectiveWindow,
     unitCount: units.length,
     sampleCount: eligible.length
@@ -2371,6 +2394,12 @@ function previewAutofill() {
   }
   const areas = [...new Set(res.platesUsed.map(p => describeReserved(p)))];
   notes.push(`ℹ Control area is never auto-filled — assign controls manually. This run: ${escHtml(areas.join(' / '))}.`);
+  const strandedList = Object.entries(res.stranded || {});
+  if (strandedList.length) {
+    const total = strandedList.reduce((a, e) => a + e[1].length, 0);
+    const detail = strandedList.map(e => `P${e[0]}: ${e[1].join(', ')}`).join(' · ');
+    notes.push(`<span class="warn">⚠ ${total} well(s) cannot be auto-filled — their column-pair partner is already taken, and using them would put two different samples in one duplicate pair. Free the partner well, or assign these by hand: ${escHtml(detail)}.</span>`);
+  }
   if (res.manualHeld && res.manualHeld.length) {
     notes.push(`↻ ${res.manualHeld.length} sample(s) marked for bridging in the app are left out of autofill — place them by hand: ${escHtml(res.manualHeld.map(s => s.input_id).join(', '))}`);
   }
