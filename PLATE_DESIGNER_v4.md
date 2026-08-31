@@ -131,6 +131,23 @@ plate raises its capacity from 40 to 48 duplicated samples. `buildFreeChunks()`
 excludes both assigned and reserved wells, so autofill can never write into a control
 area, and manual assignment there is still limited to `assay control` samples.
 
+## Export styling
+
+The stock SheetJS community build reads styles but does not write them, so the tool
+loads `xlsx-js-style` — a drop-in fork of 0.18.5 with the same `XLSX` global and utils
+API, plus cell-style output.
+
+`buildPlateSheet()` collects a `styleTargets` list while filling the value grid, then
+applies styles once the sheet object exists. Well fills use `tintARGB(colour, 0.78)`
+against the cohort colour as the font, mirroring the soft-fill/saturated-text
+relationship on screen. `autoFitColumns()` measures only the well-grid rows: the plate
+label and the colour key sit in column A and would otherwise stretch the row-letter
+column across the sheet, and Excel spills their text over the empty cells to the right
+anyway. Column A is pinned narrow, and the colour key puts its swatch in A with the
+cohort name in B.
+
+Only the Lab tab is coloured. Analysis Plate Maps gets column widths and nothing else.
+
 ## Export
 
 Existing sheets are unchanged. A **Design Log** sheet is added when an autofill plan was

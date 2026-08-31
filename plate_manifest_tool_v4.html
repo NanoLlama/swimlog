@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>PhIPSeq Plate Manifest Designer v4</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@400;500;600&family=DM+Serif+Display&display=swap');
 
@@ -426,9 +426,51 @@
   /* Right panel - current assignments */
   .assignment-list {
     padding: 8px;
-    max-height: 560px;
+    /* Keeps its original height on a tall screen — it already scrolls — but
+       gives way on a short one so the progress panel below stays reachable */
+    max-height: min(560px, 42vh);
     overflow-y: auto;
   }
+
+  .cohort-progress { padding: 10px 12px 12px; }
+
+  .cp-row { margin-bottom: 9px; }
+  .cp-row:last-child { margin-bottom: 0; }
+
+  .cp-top {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    margin-bottom: 3px;
+  }
+  .cp-name {
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .cp-count {
+    margin-left: auto;
+    font-family: 'DM Mono', monospace;
+    font-size: 9px;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .cp-bar {
+    height: 5px;
+    background: var(--surface2);
+    border-radius: 3px;
+    overflow: hidden;
+  }
+  .cp-fill { height: 100%; border-radius: 3px; transition: width 0.18s ease; }
+
+  .cp-total {
+    border-top: 1px solid var(--border);
+    margin-top: 10px;
+    padding-top: 9px;
+  }
+  .cp-total .cp-name { font-weight: 600; }
 
   .assignment-list::-webkit-scrollbar { width: 4px; }
   .assignment-list::-webkit-scrollbar-track { background: transparent; }
@@ -1037,6 +1079,13 @@
           <div class="panel-header"><div class="dot" style="background:var(--accent3)"></div> Current Plate Assignments</div>
           <div class="assignment-list" id="assignmentList">
             <div class="empty-state">No assignments yet</div>
+          </div>
+        </div>
+
+        <div class="panel" style="margin-top:14px;">
+          <div class="panel-header"><div class="dot" style="background:var(--accent)"></div> Cohort Progress</div>
+          <div class="cohort-progress" id="cohortProgress">
+            <div class="empty-state">No samples loaded</div>
           </div>
         </div>
       </div>
@@ -1719,6 +1768,7 @@ function renderPlate() {
   updateAssignmentList();
   updatePlateProgress();
   updateControlAreaLabel();
+  updateCohortProgress();
 }
 
 function makeEl(tag, cls, text) {
@@ -2531,6 +2581,54 @@ function updateAssignmentList() {
   }).join('');
 }
 
+// Share of each cohort placed anywhere in the run — the thing you actually
+// want to know mid-build, which a single plate's assignment list cannot tell you.
+function updateCohortProgress() {
+  const box = document.getElementById('cohortProgress');
+  if (!box) return;
+  if (samples.length === 0) {
+    box.innerHTML = '<div class="empty-state">No samples loaded</div>';
+    return;
+  }
+
+  const assigned = getAssignedTiuIds();
+  const groups = {};
+  const order = [];
+  samples.forEach(s => {
+    const key = s.cohort || 'No cohort';
+    if (!groups[key]) { groups[key] = { total: 0, done: 0 }; order.push(key); }
+    groups[key].total++;
+    if (assigned.has(s.tiu_id)) groups[key].done++;
+  });
+
+  let done = 0, total = 0;
+  const rows = order.map(name => {
+    const g = groups[name];
+    done += g.done; total += g.total;
+    const pct = g.total ? Math.round((g.done / g.total) * 100) : 0;
+    const colour = name === 'No cohort' ? NO_COHORT_COLOR : (cohortColorMap[name] || NO_COHORT_COLOR);
+    return `<div class="cp-row">
+      <div class="cp-top">
+        <span class="swatch" style="background:${colour};border-radius:50%;width:8px;height:8px;flex-shrink:0;"></span>
+        <span class="cp-name" title="${escHtml(name)}">${escHtml(name)}</span>
+        <span class="cp-count">${g.done}/${g.total} · ${pct}%</span>
+      </div>
+      <div class="cp-bar"><div class="cp-fill" style="width:${pct}%;background:${colour};"></div></div>
+    </div>`;
+  });
+
+  const pctAll = total ? Math.round((done / total) * 100) : 0;
+  rows.push(`<div class="cp-row cp-total">
+    <div class="cp-top">
+      <span class="cp-name">All samples</span>
+      <span class="cp-count">${done}/${total} · ${pctAll}%</span>
+    </div>
+    <div class="cp-bar"><div class="cp-fill" style="width:${pctAll}%;background:var(--accent);"></div></div>
+  </div>`);
+
+  box.innerHTML = rows.join('');
+}
+
 function updatePlateProgress() {
   const assignments = plateAssignments[currentPlate] || {};
   const filled = Object.keys(assignments).length;
@@ -2595,7 +2693,10 @@ function downloadExcel() {
   // Copy Input Samples sheet unchanged
   const inputName = workbook.SheetNames.find(s => s.toLowerCase() === 'input samples') || 'Input Samples';
   wb.SheetNames.push('Input Samples');
-  wb.Sheets['Input Samples'] = workbook.Sheets[inputName];
+  const inputSheet = workbook.Sheets[inputName];
+  inputSheet['!cols'] = autoFitColumns(
+    XLSX.utils.sheet_to_json(inputSheet, { header: 1 }), 8, 30);
+  wb.Sheets['Input Samples'] = inputSheet;
 
   // Build Lab Plate Maps
   wb.SheetNames.push('Lab Plate Maps');
@@ -2680,7 +2781,9 @@ function buildDesignLogSheet() {
     m.unplaced.forEach(u => u.samples.forEach(s => rows.push([s.input_id, s.tiu_id, u.group])));
   }
 
-  return XLSX.utils.aoa_to_sheet(rows);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = autoFitColumns(rows, 10, 60);
+  return ws;
 }
 
 // What sample types sit on a plate, counted in wells (the unit the grid is in).
@@ -2705,6 +2808,37 @@ function plateComposition(p) {
     prepTypes: [...prep],
     summary: entries.map(e => `${e[0]} ${e[1]} wells`).join(', ')
   };
+}
+
+// ─── Excel styling ────────────────────────────────────────────────────────────
+const XL_BORDER_THIN = { style: 'thin', color: { rgb: 'FFBFB8A8' } };
+const XL_GRID_BORDER = { top: XL_BORDER_THIN, bottom: XL_BORDER_THIN, left: XL_BORDER_THIN, right: XL_BORDER_THIN };
+
+function hexToARGB(hex) {
+  return 'FF' + String(hex || '#000000').replace('#', '').toUpperCase();
+}
+
+// Lighten a colour towards white so dark text stays readable on it — the same
+// relationship the designer uses on screen (soft fill, saturated text).
+function tintARGB(hex, amount) {
+  const h = String(hex || '#666666').replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+  const mix = v => Math.round(v + (255 - v) * amount);
+  return 'FF' + [mix(r), mix(g), mix(b)].map(v => v.toString(16).padStart(2, '0')).join('').toUpperCase();
+}
+
+function xlFill(argb) { return { patternType: 'solid', fgColor: { rgb: argb } }; }
+
+// Column widths sized to the longest value actually in each column
+function autoFitColumns(data, min, max) {
+  const widths = [];
+  data.forEach(row => {
+    (row || []).forEach((cell, i) => {
+      const len = cell === null || cell === undefined ? 0 : String(cell).length;
+      if (!widths[i] || len > widths[i]) widths[i] = len;
+    });
+  });
+  return widths.map(w => ({ wch: Math.min(max, Math.max(min, (w || 0) + 2)) }));
 }
 
 function buildPlateSheet(field) {
@@ -2750,6 +2884,9 @@ function buildPlateSheet(field) {
   }
 
   const isLab = field === 'input_id';
+  const styleTargets = [];
+  const headerRows = [];
+  const labelRows = [];
 
   for (let p = 1; p <= totalPlates; p++) {
     const assignments = plateAssignments[p] || {};
@@ -2759,6 +2896,8 @@ function buildPlateSheet(field) {
     // State the plate's composition in its label row. The leading "PLATE n"
     // is preserved so the file still re-imports (plate detection reads the
     // first number on the row).
+    labelRows.push(labelRow);
+    headerRows.push(labelRow + 1);
     const comp = plateComposition(p);
     if (isLab && comp.total > 0) {
       data[labelRow] = data[labelRow] || [];
@@ -2790,14 +2929,98 @@ function buildPlateSheet(field) {
             val = `${val} [${(sObj && sObj.sample_type) || 'unspecified'}]`;
           }
           data[dataRow][dataCol] = val;
+          styleTargets.push({ r: dataRow, c: dataCol, input_id: assignment.input_id });
         } else {
           data[dataRow][dataCol] = data[dataRow][dataCol] || null;
+          if (isReserved(p, key)) styleTargets.push({ r: dataRow, c: dataCol, reserved: true });
         }
       });
     });
   }
 
-  return XLSX.utils.aoa_to_sheet(data);
+  // A colour legend under the last plate, so the map is self-explanatory at
+  // the bench without needing the designer open alongside it
+  const legendRows = [];
+  if (isLab) {
+    const used = [...new Set(
+      Object.values(plateAssignments)
+        .flatMap(w => Object.values(w))
+        .map(a => (samples.find(x => x.input_id === a.input_id) || {}).cohort || '')
+    )];
+    if (used.length) {
+      data.push([]);
+      legendRows.push({ r: data.length, title: true });
+      data.push(['COHORT COLOUR KEY']);
+      used.sort().forEach(c => {
+        legendRows.push({ r: data.length, cohort: c });
+        // swatch in column A, name in B — keeps column A narrow for row letters
+        data.push(['', c || 'No cohort']);
+      });
+    }
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  // Width only from the well grid: the plate label and the colour key live in
+  // column A and would otherwise stretch the row-letter column across the sheet.
+  // Excel spills their text over the empty cells to the right anyway.
+  const gridRows = [];
+  headerRows.forEach(hr => { for (let r = hr; r <= hr + 8; r++) if (data[r]) gridRows.push(data[r]); });
+  const cols = autoFitColumns(gridRows, 6, 28);
+  cols[0] = { wch: 4 };                 // row letters
+  if (cols[1]) cols[1] = { wch: Math.max(cols[1].wch, 16) }; // also carries the colour key
+  ws['!cols'] = cols;
+
+  const at = (r, c) => XLSX.utils.encode_cell({ r, c });
+  const ensure = ref => { if (!ws[ref]) ws[ref] = { t: 's', v: '' }; return ws[ref]; };
+
+  labelRows.forEach(r => {
+    const cell = ws[at(r, 0)];
+    if (cell) cell.s = { font: { bold: true, sz: 12 }, alignment: { vertical: 'center' } };
+  });
+  headerRows.forEach(r => {
+    for (let c = 0; c <= 12; c++) {
+      const cell = ws[at(r, c)];
+      if (cell) cell.s = { font: { bold: true }, alignment: { horizontal: 'center' },
+                           fill: xlFill('FFF0EDE5'), border: XL_GRID_BORDER };
+    }
+    // row letters down the left of each plate
+    for (let rr = r + 1; rr <= r + 8; rr++) {
+      const cell = ws[at(rr, 0)];
+      if (cell) cell.s = { font: { bold: true }, alignment: { horizontal: 'center' },
+                           fill: xlFill('FFF0EDE5'), border: XL_GRID_BORDER };
+    }
+  });
+
+  styleTargets.forEach(t => {
+    const ref = at(t.r, t.c);
+    const cell = ensure(ref);
+    if (t.reserved) {
+      cell.s = { fill: xlFill('FFF7F5F0'), border: XL_GRID_BORDER,
+                 font: { color: { rgb: 'FFB0A894' }, sz: 9 },
+                 alignment: { horizontal: 'center' } };
+      return;
+    }
+    const base = { border: XL_GRID_BORDER, alignment: { horizontal: 'center', vertical: 'center' } };
+    if (!isLab) { cell.s = base; return; }
+    const colour = sampleColorMap[t.input_id] || NO_COHORT_COLOR;
+    cell.s = Object.assign({}, base, {
+      fill: xlFill(tintARGB(colour, 0.78)),
+      font: { color: { rgb: hexToARGB(colour) }, bold: true, sz: 10 }
+    });
+  });
+
+  legendRows.forEach(l => {
+    const ref = at(l.r, 0);
+    const cell = ws[ref] || ensure(ref);
+    if (l.title) { cell.s = { font: { bold: true, sz: 11 } }; return; }
+    const colour = cohortColorMap[l.cohort] || NO_COHORT_COLOR;
+    const swatch = { fill: xlFill(tintARGB(colour, 0.35)), border: XL_GRID_BORDER };
+    ensure(ref).s = swatch;
+    const nameCell = ws[at(l.r, 1)];
+    if (nameCell) nameCell.s = { font: { color: { rgb: hexToARGB(colour) }, bold: true } };
+  });
+
+  return ws;
 }
 </script>
 </body>
