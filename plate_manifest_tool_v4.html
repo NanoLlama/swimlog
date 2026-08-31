@@ -799,6 +799,9 @@
     justify-content: flex-end;
   }
 
+  .clickable-header { cursor: pointer; border-radius: 4px; }
+  .clickable-header:hover { color: var(--accent); background: var(--surface2); }
+
   .col-control-badge {
     position: absolute;
     top: -8px;
@@ -905,10 +908,21 @@
   }
   .bridge-btn:hover { border-color: var(--accent3); color: var(--accent3); }
   .bridge-btn.on { background: var(--accent3); border-color: var(--accent3); color: #fff; }
+  .bridge-btn.fixed { cursor: default; opacity: 0.85; }
 
   .sample-item { position: relative; padding-right: 28px; }
 
   .area-label { font-size: 11px; color: var(--text); }
+  .area-unlocked {
+    background: #8a6a00;
+    color: #fff;
+    font-family: 'DM Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.06em;
+    padding: 1px 4px;
+    border-radius: 2px;
+  }
+
   .area-custom {
     background: var(--accent3);
     color: #fff;
@@ -1018,6 +1032,7 @@
             <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
             <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
             <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
+            <button id="unlockBtn" onclick="toggleAreaUnlock()">🔓 Unlock</button>
           </div>
           <div class="divider"></div>
           <button class="btn btn-ghost" style="font-size:12px;" onclick="openAutofillModal()">⚡ Autofill Plates</button>
@@ -1063,6 +1078,8 @@
               <option value="">— pick sample —</option>
             </select>
             <button class="btn btn-primary" onclick="assignSelected()" style="white-space:nowrap;">⬤ Assign Wells</button>
+            <button class="btn btn-ghost" onclick="assignSelectedAllPlates()" style="white-space:nowrap;"
+                    title="Put this sample in the same wells on every plate — the usual way to run one control across the whole batch">All plates</button>
           </div>
         </div>
 
@@ -1125,6 +1142,15 @@
         <input type="number" id="ditherWindow" min="1" step="1" value="4"
                oninput="this.dataset.touched=1; autofillOptionChanged();">
         <span class="hint">Window size. N = all plates spreads each group over the whole run.</span>
+      </div>
+      <div class="dither-field">
+        <label for="replicateLayout">Replicate layout</label>
+        <select id="replicateLayout" onchange="autofillOptionChanged()">
+          <option value="pair-down">Side-by-side, fill down (A1+A2, B1+B2 …)</option>
+          <option value="pair-across">Side-by-side, fill across (A1+A2, A3+A4 …)</option>
+          <option value="stack-down">Stacked, fill down (A1+B1, C1+D1 …)</option>
+        </select>
+        <span class="hint" id="layoutHint"></span>
       </div>
       <div class="dither-field">
         <label for="sampleOrder">Sample order within group</label>
@@ -1477,7 +1503,11 @@ function renderSampleList(filter = '') {
     const isActive = activeSample && activeSample.tiu_id === s.tiu_id;
     const isDup = duplicateIds.has(s.input_id + '|||' + s.sample_type);
     const placed = assignedTiuIds.has(s.tiu_id);
-    const canBridge = !isAnyControl(s) && !isRepeating(s); // controls already repeat; manifest bridging is fixed
+    // Controls were silently always-available, which made repeating one across
+    // plates possible but invisible. They now carry the same ↻ marker, shown as
+    // permanently on, so the behaviour is stated rather than implied.
+    const alwaysBridged = isAnyControl(s) || isRepeating(s);
+    const canBridge = !alwaysBridged;
     const isCtrl = isAnyControl(s);
     const rep = isBridged(s);
     const assignedOnPlates = (isCtrl || rep) ? getPlateNumsFor(s.input_id) : [];
@@ -1486,9 +1516,12 @@ function renderSampleList(filter = '') {
       : (rep ? `<span style="font-size:9px;color:var(--accent3);margin-left:auto;">↻ bridging</span>` : '');
     return `<div class="sample-item ${isActive ? 'active' : ''}" onclick="selectSample('${s.tiu_id}')"
       style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}${placed && !rep ? 'opacity:0.62;' : ''}">
-      ${canBridge ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}"
-        onclick="toggleBridge('${s.tiu_id}', event)"
-        title="${isManualBridge(s) ? 'Bridging on — stays in the pool for other plates. Click to turn off.' : 'Bridge this sample: keep it in the pool so it can go on more plates.'}">↻</button>` : ''}
+      ${canBridge
+        ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}"
+             onclick="toggleBridge('${s.tiu_id}', event)"
+             title="${isManualBridge(s) ? 'Bridging on — stays in the pool for other plates. Click to turn off.' : 'Bridge this sample: keep it in the pool so it can go on more plates.'}">↻</button>`
+        : `<button class="bridge-btn on fixed" onclick="event.stopPropagation()"
+             title="${isAnyControl(s) ? 'Controls always stay in the pool — place this on as many plates as you need, or use the All plates button.' : 'Bridging is set by the repeat_across_plates column in the manifest.'}">↻</button>`}
       <div style="display:flex;align-items:center;gap:6px;">
         <span class="swatch" style="background:${color}; border-radius:50%;"></span>
         <span class="input-id">${s.input_id || '<em style="color:var(--muted)">No input_id</em>'}</span>
@@ -1535,6 +1568,8 @@ function selectSample(tiu_id) {
 // been defined, otherwise the run-wide default of columns 11–12. Autofill never
 // touches reserved wells, and only control-type samples may be assigned there.
 let plateReserved = {}; // {plateNum: Set(wellKey)} — explicit per-plate override
+let areaUnlocked = {};  // {plateNum: true} — area still reserved from autofill,
+                        // but hand-assignable by anything while unlocked
 const DEFAULT_CONTROL_COLS = [11, 12];
 
 function defaultReservedSet() {
@@ -1604,12 +1639,29 @@ function clearReserved() {
   renderPlate();
 }
 
+// Unfreeze the control area on this plate so controls (or anything else) can be
+// dropped in after the samples are down. The area stays defined, so autofill
+// still leaves it alone.
+function toggleAreaUnlock() {
+  if (areaUnlocked[currentPlate]) delete areaUnlocked[currentPlate];
+  else areaUnlocked[currentPlate] = true;
+  renderPlate();
+}
+
 function updateControlAreaLabel() {
   const el = document.getElementById('controlAreaLabel');
   if (!el) return;
   const custom = !!plateReserved[currentPlate];
   el.innerHTML = `Plate ${currentPlate}: <strong>${describeReserved(currentPlate)}</strong>` +
-    (custom ? ' <span class="area-custom">custom</span>' : ' <span style="color:var(--muted)">(default)</span>');
+    (custom ? ' <span class="area-custom">custom</span>' : ' <span style="color:var(--muted)">(default)</span>') +
+    (areaUnlocked[currentPlate] ? ' <span class="area-unlocked">🔓 unlocked</span>' : '');
+  const btn = document.getElementById('unlockBtn');
+  if (btn) {
+    btn.textContent = areaUnlocked[currentPlate] ? '🔒 Lock' : '🔓 Unlock';
+    btn.title = areaUnlocked[currentPlate]
+      ? 'Re-lock the control area on this plate'
+      : 'Unfreeze the control area on this plate so wells there can be assigned by hand';
+  }
 }
 
 function isAssayControl(sample) {
@@ -1691,18 +1743,24 @@ function renderPlate() {
     el.innerHTML = locked
       ? `${c}<span class="col-control-badge">CTRL</span>`
       : `${c}`;
+    el.classList.add('clickable-header');
+    el.title = `Select column ${c}`;
+    el.addEventListener('click', () => selectCol(c));
     grid.appendChild(el);
   });
 
   // Rows
   ROWS.forEach(row => {
-    grid.appendChild(makeEl('div', 'row-header', row));
+    const rh = makeEl('div', 'row-header clickable-header', row);
+    rh.title = `Select row ${row}`;
+    rh.addEventListener('click', () => selectRow(row));
+    grid.appendChild(rh);
 
     COLS.forEach(col => {
       const key = `${row}${col}`;
       const assigned = assignments[key];
       const isSelected = selectedWells.has(key);
-      const locked = isReserved(currentPlate, key) && !assigned;
+      const locked = isReserved(currentPlate, key) && !assigned && !areaUnlocked[currentPlate];
       const assignedSampleObj = assigned ? samples.find(s => s.input_id === assigned.input_id) : null;
       const isCtrlAssigned = assigned && isAssayControl(assignedSampleObj);
 
@@ -1755,8 +1813,15 @@ function renderPlate() {
         div.title = 'Reserved for controls on this plate';
       }
 
-      div.addEventListener('click', () => { if (!assigned && !locked) toggleWell(key); });
-      div.addEventListener('mouseenter', e => showTooltip(e, key, assigned, locked));
+      div.addEventListener('mousedown', e => {
+        if (assigned || locked) return;
+        e.preventDefault();          // no text-drag while sweeping the plate
+        startDrag(key);
+      });
+      div.addEventListener('mouseenter', e => {
+        showTooltip(e, key, assigned, locked);
+        if (dragging) applyDragTo(key);
+      });
       div.addEventListener('mouseleave', hideTooltip);
       if (assigned || locked) div.style.cursor = locked ? 'not-allowed' : 'default';
 
@@ -1786,6 +1851,78 @@ function hexToRgba(hex, alpha) {
 }
 
 // ─── Well Interaction ────────────────────────────────────────────────────────
+// Drag-select. Selection is applied straight to the DOM while the mouse is
+// down — re-rendering the grid mid-drag would replace the very elements the
+// pointer is tracking — then the grid is rendered once on release.
+let dragging = false;
+let dragMode = 'add';
+
+function wellSelectable(key) {
+  const assignments = plateAssignments[currentPlate] || {};
+  if (assignments[key]) return false;
+  return !isReserved(currentPlate, key) || areaUnlocked[currentPlate];
+}
+
+let dragAnchor = null;
+let dragBase = null;
+
+// Rectangular marquee from the well the drag started on to the one under the
+// cursor — sweeping a block is the common case on a plate, and a path-based
+// drag would make the user trace every well.
+function applyDragTo(key) {
+  if (!dragAnchor) return;
+  const r1 = ROWS.indexOf(dragAnchor[0]), c1 = parseInt(dragAnchor.slice(1), 10);
+  const r2 = ROWS.indexOf(key[0]), c2 = parseInt(key.slice(1), 10);
+  if (r2 < 0 || !Number.isFinite(c2)) return;
+
+  const next = new Set(dragBase);
+  for (let r = Math.min(r1, r2); r <= Math.max(r1, r2); r++) {
+    for (let c = Math.min(c1, c2); c <= Math.max(c1, c2); c++) {
+      const k = `${ROWS[r]}${c}`;
+      if (!wellSelectable(k)) continue;
+      if (dragMode === 'add') next.add(k); else next.delete(k);
+    }
+  }
+  selectedWells = next;
+
+  document.querySelectorAll('.well[data-well]').forEach(el => {
+    el.classList.toggle('selected', selectedWells.has(el.dataset.well));
+  });
+  updateSelectionBanner();
+}
+
+function startDrag(key) {
+  if (!wellSelectable(key)) return;
+  dragging = true;
+  dragMode = selectedWells.has(key) ? 'remove' : 'add';
+  dragAnchor = key;
+  dragBase = new Set(selectedWells);
+  applyDragTo(key);
+}
+
+document.addEventListener('mouseup', () => {
+  if (!dragging) return;
+  dragging = false;
+  dragAnchor = null;
+  dragBase = null;
+  renderPlate();
+});
+
+// Clicking a row letter or a column number takes the whole line
+function selectRow(row) {
+  const all = COLS.map(c => `${row}${c}`).filter(wellSelectable);
+  const allOn = all.length > 0 && all.every(k => selectedWells.has(k));
+  all.forEach(k => allOn ? selectedWells.delete(k) : selectedWells.add(k));
+  renderPlate();
+}
+
+function selectCol(col) {
+  const all = ROWS.map(r => `${r}${col}`).filter(wellSelectable);
+  const allOn = all.length > 0 && all.every(k => selectedWells.has(k));
+  all.forEach(k => allOn ? selectedWells.delete(k) : selectedWells.add(k));
+  renderPlate();
+}
+
 function toggleWell(key) {
   if (selectedWells.has(key)) {
     selectedWells.delete(key);
@@ -1800,7 +1937,7 @@ function selectAll() {
   const assignments = plateAssignments[currentPlate] || {};
   ROWS.forEach(r => COLS.forEach(c => {
     const key = `${r}${c}`;
-    if (!assignments[key] && !isReserved(currentPlate, key)) selectedWells.add(key);
+    if (!assignments[key] && (!isReserved(currentPlate, key) || areaUnlocked[currentPlate])) selectedWells.add(key);
   }));
   renderPlate();
 }
@@ -1814,7 +1951,7 @@ function selectEmpty() {
   const assignments = plateAssignments[currentPlate] || {};
   ROWS.forEach(r => COLS.forEach(c => {
     const key = `${r}${c}`;
-    if (!assignments[key] && !isReserved(currentPlate, key)) selectedWells.add(key);
+    if (!assignments[key] && (!isReserved(currentPlate, key) || areaUnlocked[currentPlate])) selectedWells.add(key);
   }));
   renderPlate();
 }
@@ -1827,23 +1964,60 @@ function assignSelected() {
   if (selectedWells.size === 0) { alert('Please select at least one well.'); return; }
 
   if (!plateAssignments[currentPlate]) plateAssignments[currentPlate] = {};
-  const sampleIsAssayCtrl = isAssayControl(sample);
+  // Any control-type sample belongs in the control area — restricting it to
+  // exactly "assay control" locked mAbs and plain controls out of it.
+  const sampleIsAssayCtrl = isAnyControl(sample);
   const sampleIsCtrl = isAnyControl(sample);
   let skippedLocked = 0;
   selectedWells.forEach(key => {
-    const locked = isReserved(currentPlate, key);
+    const locked = isReserved(currentPlate, key) && !areaUnlocked[currentPlate];
     if (locked && !sampleIsAssayCtrl) { skippedLocked++; return; }
     if (!plateAssignments[currentPlate][key]) {
       plateAssignments[currentPlate][key] = { input_id: sample.input_id, tiu_id: sample.tiu_id };
     }
   });
-  if (skippedLocked > 0) alert(`${skippedLocked} reserved well(s) were skipped — only "assay control" samples can be assigned to the control area.`);
+  if (skippedLocked > 0) alert(`${skippedLocked} reserved well(s) were skipped — the control area takes control-type samples (assay control, control, mAb). Use "Unlock" on this plate to put anything there.`);
 
   selectedWells.clear();
   renderPlate();
   renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
   buildAssignSelect();
   updateStats();
+}
+
+// Place the chosen sample in the same wells on every plate. Wells already
+// taken on a plate are left alone, so this is safe to run late in a build.
+function assignSelectedAllPlates() {
+  const selVal = document.getElementById('assignSelect').value;
+  const sample = samples.find(s => s.tiu_id === selVal) || activeSample;
+  if (!sample) { alert('Please select a sample first.'); return; }
+  if (selectedWells.size === 0) { alert('Please select at least one well.'); return; }
+
+  const wells = [...selectedWells];
+  const isCtrl = isAnyControl(sample);
+  let placed = 0, skipped = 0;
+  const touched = [];
+
+  for (let p = 1; p <= totalPlates; p++) {
+    if (!plateAssignments[p]) plateAssignments[p] = {};
+    let any = false;
+    wells.forEach(key => {
+      if (plateAssignments[p][key]) { skipped++; return; }
+      if (isReserved(p, key) && !isCtrl && !areaUnlocked[p]) { skipped++; return; }
+      plateAssignments[p][key] = { input_id: sample.input_id, tiu_id: sample.tiu_id };
+      placed++; any = true;
+    });
+    if (any) touched.push(p);
+  }
+
+  selectedWells.clear();
+  renderPlate();
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  buildAssignSelect();
+  updateStats();
+  alert(`${sample.input_id} placed in ${placed} well(s) across plate(s) ${touched.join(', ') || '—'}.` +
+    (skipped ? `\n${skipped} well(s) were already taken or reserved and were left alone.` : '') +
+    `\n\nEach plate's copy is a separate instance: it exports as ${sample.input_id}-P1, -P2, … and gets its own row in the Sample Instances sheet.`);
 }
 
 function clearWell(key) {
@@ -1882,15 +2056,33 @@ const SAMPLE_COL_PAIRS = [[1,2],[3,4],[5,6],[7,8],[9,10],[11,12]];
 
 // Slot order: vertical within each column pair
 // A1+A2, B1+B2, C1+C2 ... H1+H2, then A3+A4, B3+B4 ...
-function getSampleSlots() {
+const ROW_PAIRS = [['A','B'], ['C','D'], ['E','F'], ['G','H']];
+
+// Order in which wells are consumed. A replicate takes consecutive slots, so
+// this decides both how a duplicate sits on the plate and which way the fill
+// travels.
+//   pair-down   A1+A2, B1+B2 … H1+H2, then A3+A4 …  (side-by-side, down a column pair)
+//   pair-across A1+A2, A3+A4 … A9+A10, then B1+B2 … (side-by-side, along a row)
+//   stack-down  A1+B1, C1+D1 … G1+H1, then A2+B2 …  (stacked, down a column)
+function getSampleSlots(layout) {
   const slots = [];
-  SAMPLE_COL_PAIRS.forEach(([c1, c2]) => {
-    ROWS.forEach(row => {
-      slots.push(`${row}${c1}`);
-      slots.push(`${row}${c2}`);
-    });
-  });
-  return slots; // 80 slots per plate
+  if (layout === 'stack-down') {
+    COLS.forEach(c => ROW_PAIRS.forEach(([r1, r2]) => {
+      slots.push(`${r1}${c}`);
+      slots.push(`${r2}${c}`);
+    }));
+  } else if (layout === 'pair-across') {
+    ROWS.forEach(r => SAMPLE_COL_PAIRS.forEach(([c1, c2]) => {
+      slots.push(`${r}${c1}`);
+      slots.push(`${r}${c2}`);
+    }));
+  } else {
+    SAMPLE_COL_PAIRS.forEach(([c1, c2]) => ROWS.forEach(r => {
+      slots.push(`${r}${c1}`);
+      slots.push(`${r}${c2}`);
+    }));
+  }
+  return slots; // 96 slots per plate; the control area decides what is usable
 }
 
 function getControlSlots(plateNum) {
@@ -2005,8 +2197,8 @@ function apportion(total, weights) {
 // Free replicate chunks on a plate. Chunks are cut from the canonical slot
 // order first and only kept if every well in them is free — that guarantees a
 // duplicate always lands side-by-side even when some wells were placed by hand.
-function buildFreeChunks(plateNum, replicates, wellOrder, rng) {
-  const slots = getSampleSlots();
+function buildFreeChunks(plateNum, replicates, wellOrder, rng, layout) {
+  const slots = getSampleSlots(layout);
   const assigned = plateAssignments[plateNum] || {};
   const reserved = reservedOn(plateNum);
   const chunks = [];
@@ -2022,8 +2214,8 @@ function buildFreeChunks(plateNum, replicates, wellOrder, rng) {
 // one would put two different samples in a column pair, breaking the promise
 // that neighbouring wells are duplicates of each other — so they are left empty
 // on purpose, and reported rather than silently lost.
-function strandedWells(plateNum, replicates) {
-  const slots = getSampleSlots();
+function strandedWells(plateNum, replicates, layout) {
+  const slots = getSampleSlots(layout);
   const assigned = plateAssignments[plateNum] || {};
   const reserved = reservedOn(plateNum);
   const out = [];
@@ -2048,6 +2240,7 @@ function readAutofillOptions() {
     windowSize: Math.max(1, parseInt(winEl.value, 10) || 1),
     wellOrder: document.getElementById('wellOrder').value,
     seed: document.getElementById('ditherSeed').value || '1',
+    layout: document.getElementById('replicateLayout').value,
     sampleOrder: document.getElementById('sampleOrder').value,
     keepSubjectTogether: document.getElementById('keepSubjectTogether').checked,
     replicates: parseInt(document.getElementById('replicateCount').value, 10) || 2
@@ -2102,7 +2295,7 @@ function computeAutofillPlan(opts) {
   const chunksByPlate = {}, capacity = {}, used = {}, groupCount = {}, plateUnits = {};
   const platePool = [];
   for (let p = 1; p <= totalPlates; p++) {
-    chunksByPlate[p] = buildFreeChunks(p, opts.replicates, opts.wellOrder, rng);
+    chunksByPlate[p] = buildFreeChunks(p, opts.replicates, opts.wellOrder, rng, opts.layout);
     capacity[p] = chunksByPlate[p].length;
     used[p] = 0; groupCount[p] = {}; plateUnits[p] = [];
     if (capacity[p] > 0) platePool.push(p);
@@ -2112,7 +2305,7 @@ function computeAutofillPlan(opts) {
   const stranded = {};
   platePool.concat(Object.keys(plateAssignments).map(Number)).forEach(p => {
     if (stranded[p]) return;
-    const sw = strandedWells(p, opts.replicates);
+    const sw = strandedWells(p, opts.replicates, opts.layout);
     if (sw.length) stranded[p] = sw;
   });
 
@@ -2374,6 +2567,12 @@ function closeAutofillModal() {
   autofillPlan = null;
 }
 
+const LAYOUT_HINTS = {
+  'pair-down': 'Duplicates sit beside each other; the fill runs down a column pair.',
+  'pair-across': 'Duplicates sit beside each other; the fill runs along each row.',
+  'stack-down': 'Duplicates sit one above the other, four samples per column.'
+};
+
 const SAMPLE_ORDER_HINTS = {
   sequential: 'Each plate takes a consecutive block of every group — grab tubes in rack order.',
   random: 'Each plate takes a random subset. Breaks any bias hidden in manifest order.'
@@ -2390,6 +2589,8 @@ function onWellOrderChange() {
   if (el) el.textContent = WELL_ORDER_HINTS[document.getElementById('wellOrder').value] || '';
   const se = document.getElementById('sampleOrderHint');
   if (se) se.textContent = SAMPLE_ORDER_HINTS[document.getElementById('sampleOrder').value] || '';
+  const le = document.getElementById('layoutHint');
+  if (le) le.textContent = LAYOUT_HINTS[document.getElementById('replicateLayout').value] || '';
 }
 
 function onLayoutModeChange() {
@@ -2435,7 +2636,9 @@ function previewAutofill() {
   head.push(`<strong>${res.sampleCount}</strong> sample(s) in <strong>${res.unitCount}</strong> unit(s) → <strong>${res.platesUsed.length}</strong> plate(s)`);
   head.push(`Mode: <strong>${opts.mode === 'dither' ? `dither across ${res.effectiveWindow} plate(s)` : 'block fill'}</strong> · Group by: <strong>${escHtml(groupLabel)}</strong>`);
   const wellOrderLabel = { grouped: 'grouped in column blocks', scatter: 'scattered', sequential: 'sequential' }[opts.wellOrder] || opts.wellOrder;
-  head.push(`${wellsPer === 2 ? 'Side-by-side duplicates' : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Samples: <strong>${opts.sampleOrder === 'random' ? 'randomised' : 'manifest order'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
+  const layoutName = { 'pair-down': 'side-by-side, down', 'pair-across': 'side-by-side, across',
+                       'stack-down': 'stacked, down' }[opts.layout] || opts.layout;
+  head.push(`${wellsPer === 2 ? 'Duplicates: ' + layoutName : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Samples: <strong>${opts.sampleOrder === 'random' ? 'randomised' : 'manifest order'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
   if (opts.keepSubjectTogether) head.push('Subjects kept whole: every sample from one subject lands on the same plate.');
   if (res.bridging && res.bridging.length) {
     const names = res.bridging.map(b => {
@@ -2706,6 +2909,13 @@ function downloadExcel() {
   wb.SheetNames.push('Analysis Plate Maps');
   wb.Sheets['Analysis Plate Maps'] = buildPlateSheet('tiu_id');
 
+  // Sample Instances — one row per physical usage, which is what a library
+  // prep and its NGS barcode actually attach to. A sample run on three plates
+  // is three instances with three distinct ids, whereas Input Samples keeps
+  // the investigator's original one row per sample.
+  wb.SheetNames.push('Sample Instances');
+  wb.Sheets['Sample Instances'] = buildInstanceSheet();
+
   // Design Log — records the randomisation so the layout can be reproduced
   const log = buildDesignLogSheet();
   if (log) {
@@ -2714,6 +2924,75 @@ function downloadExcel() {
   }
 
   XLSX.writeFile(wb, `${originalFileName}_filled.xlsx`);
+}
+
+// One row per sample-on-a-plate. The instance id carries the -Pn suffix
+// whenever a sample is used more than once, so it matches the plate maps and
+// stays unique for barcode assignment.
+function buildInstanceSheet() {
+  const META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
+                'volume_mL', 'collection_date', 'cohort', 'num_freeze_thaws',
+                'diagnosis', 'dither_group', 'notes'];
+
+  // How many plates each sample sits on decides whether it needs a suffix
+  const platesOf = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    Object.values(plateAssignments[p] || {}).forEach(a => {
+      (platesOf[a.input_id] = platesOf[a.input_id] || new Set()).add(p);
+    });
+  }
+
+  const rows = [];
+  rows.push(['instance_id', 'lab_instance_id', 'source_tiu_id', 'source_input_id',
+             'plate', 'wells', 'n_wells', 'instance_no', 'instances_total',
+             'repeated_across_plates', ...META]);
+
+  const slotOrder = getSampleSlots();
+  const wellRank = {};
+  slotOrder.forEach((k, i) => { wellRank[k] = i; });
+
+  for (let p = 1; p <= totalPlates; p++) {
+    const assignments = plateAssignments[p] || {};
+    // group this plate's wells by sample
+    const byTiu = {};
+    Object.entries(assignments).forEach(([well, a]) => {
+      const k = a.tiu_id + '|' + a.input_id;
+      if (!byTiu[k]) byTiu[k] = { tiu_id: a.tiu_id, input_id: a.input_id, wells: [] };
+      byTiu[k].wells.push(well);
+    });
+
+    Object.values(byTiu)
+      .sort((a, b) => (wellRank[a.wells[0]] ?? 999) - (wellRank[b.wells[0]] ?? 999))
+      .forEach(entry => {
+        const all = [...(platesOf[entry.input_id] || [p])].sort((a, b) => a - b);
+        const repeated = all.length > 1;
+        const suffix = repeated ? `-P${p}` : '';
+        const src = samples.find(x => x.tiu_id === entry.tiu_id) || {};
+        entry.wells.sort((a, b) => (wellRank[a] ?? 999) - (wellRank[b] ?? 999));
+        rows.push([
+          entry.tiu_id + suffix,
+          entry.input_id + suffix,
+          entry.tiu_id,
+          entry.input_id,
+          p,
+          entry.wells.join(', '),
+          entry.wells.length,
+          all.indexOf(p) + 1,
+          all.length,
+          repeated ? 'yes' : 'no',
+          ...META.map(k => src[k] === undefined ? '' : src[k])
+        ]);
+      });
+  }
+
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = autoFitColumns(rows, 8, 30);
+  for (let c = 0; c < rows[0].length; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+    if (cell) cell.s = { font: { bold: true }, fill: xlFill('FFF0EDE5'), border: XL_GRID_BORDER };
+  }
+  if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
+  return ws;
 }
 
 // Written only when an autofill plan was actually applied. Captures every
@@ -2734,6 +3013,9 @@ function buildDesignLogSheet() {
   rows.push(['Dither window (plates)', o.mode === 'dither' ? m.effectiveWindow : 'n/a']);
   rows.push(['Group / stratify by', groupLabel]);
   rows.push(['Replicates per sample', o.replicates]);
+  rows.push(['Replicate layout', { 'pair-down': 'Side-by-side, fill down',
+                                   'pair-across': 'Side-by-side, fill across',
+                                   'stack-down': 'Stacked, fill down' }[o.layout] || o.layout]);
   rows.push(['Sample order within group', o.sampleOrder === 'random' ? 'Randomised (seeded)' : 'Manifest order (consecutive runs)']);
   rows.push(['Well placement', { grouped: 'Ordered — groups in contiguous column blocks',
                                  scatter: 'Scattered (seeded)',

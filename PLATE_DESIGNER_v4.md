@@ -131,6 +131,21 @@ plate raises its capacity from 40 to 48 duplicated samples. `buildFreeChunks()`
 excludes both assigned and reserved wells, so autofill can never write into a control
 area, and manual assignment there is still limited to `assay control` samples.
 
+## Replicate layout
+
+`getSampleSlots(layout)` decides the order wells are consumed, and a replicate takes
+consecutive slots — so one setting controls both how a duplicate sits and which way
+the fill travels:
+
+| layout | first pairs | shape |
+|---|---|---|
+| `pair-down` (default) | A1+A2, B1+B2, C1+C2 | side by side, down a column pair |
+| `pair-across` | A1+A2, A3+A4, A5+A6 | side by side, along a row |
+| `stack-down` | A1+B1, C1+D1, E1+F1 | stacked, four samples per column |
+
+`buildFreeChunks()` and `strandedWells()` both take the layout, so pair alignment and
+stranded-well detection follow whichever shape is in use.
+
 ## Export styling
 
 The stock SheetJS community build reads styles but does not write them, so the tool
