@@ -131,6 +131,23 @@ plate raises its capacity from 40 to 48 duplicated samples. `buildFreeChunks()`
 excludes both assigned and reserved wells, so autofill can never write into a control
 area, and manual assignment there is still limited to `assay control` samples.
 
+## Round-tripping a filled manifest
+
+`restoreAssignments()` rebuilds `plateAssignments` from an uploaded workbook,
+preferring the `Sample Instances` sheet (`source_tiu_id` + `plate` + `wells`, which is
+unambiguous) and falling back to parsing the Analysis grid, stripping any `-Pn`
+suffix. Lab Plate Maps is never used as a source because its cells may carry
+`[sample_type]` tags. `restoreChangeLog()` reads any existing `Change Log` rows and
+marks them `prior: true` so later exports distinguish them from the current session.
+`inferBridgingFromLayout()` adds anything sitting on more than one plate to
+`manualBridge`, so a restored layout keeps those samples in the pool.
+
+Edits go through `applyWellEdit()`, which refuses to run without a template user,
+resolves the replicate pair via `wellsOfSampleOnPlate()`, and appends to `changeLog`
+before mutating `plateAssignments`. `exportFileName()` strips a trailing
+`_YYYYMMDD-HHMM` and `_filled` before appending a fresh stamp, so repeated exports do
+not accumulate suffixes.
+
 ## Replicate layout
 
 `getSampleSlots(layout)` decides the order wells are consumed, and a replicate takes

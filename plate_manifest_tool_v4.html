@@ -955,7 +955,16 @@
       <h1>PhIPSeq Plate Designer</h1>
       <p>96-Well Sample Manifest Tool</p>
     </div>
-    <div class="badge">v4.0</div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
+        <label for="templateUser" style="color:var(--muted);">Template user:</label>
+        <input id="templateUser" type="text" placeholder="name or initials"
+               oninput="rememberUser()" title="Recorded against every edit and written to the Design Log"
+               style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);
+                      font-family:'DM Mono',monospace;font-size:11px;padding:4px 9px;width:160px;outline:none;">
+      </div>
+      <div class="badge">v4.0</div>
+    </div>
   </header>
 
   <!-- Upload -->
@@ -973,11 +982,14 @@
       <div>Samples: <span id="sampleCount">0</span></div>
       <div>Plates: <span id="plateCount">0</span></div>
       <div>Total Assigned: <span id="totalAssigned">0</span> / <span id="totalWells">0</span></div>
+
     </div>
 
     <div class="main-layout">
       <!-- Left: Samples -->
       <div>
+        <div id="restoredBanner" style="display:none;margin-bottom:8px;padding:10px 12px;background:#eef4ff;
+             border:1px solid #9dbdf0;border-radius:7px;align-items:center;gap:8px;font-size:11px;color:var(--text);"></div>
         <div id="dupWarning" style="display:none; margin-bottom:8px; padding:10px 12px; background:#fef9ec; border:1px solid #e8c840; border-radius:7px; flex-direction:column; gap:5px;">
           <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:#8a6a00;font-weight:600;">
             ⚠ Duplicate sample IDs detected
@@ -1198,6 +1210,43 @@
   </div>
 </div>
 
+<div class="autofill-modal-overlay hidden" id="wellEditOverlay">
+  <div class="autofill-modal" style="max-width:460px;">
+    <h2>✎ Edit well <span id="weWell"></span></h2>
+    <p id="weCurrent"></p>
+    <div class="dither-controls" style="grid-template-columns:1fr;">
+      <div class="dither-field">
+        <label for="weAction">What happened</label>
+        <select id="weAction" onchange="onWellEditAction()">
+          <option value="replace">Replace with another sample</option>
+          <option value="clear">Sample unavailable — empty the well</option>
+          <option value="note">Add a note only</option>
+        </select>
+      </div>
+      <div class="dither-field" id="weReplaceField">
+        <label for="weReplacement">Replacement sample</label>
+        <select id="weReplacement"></select>
+        <span class="hint">Only samples still available in the pool are listed.</span>
+      </div>
+      <div class="dither-field" id="wePairField">
+        <label>Scope</label>
+        <label class="toggle-wrap">
+          <input type="checkbox" id="wePair" checked>
+          <span id="wePairLabel">Apply to both replicate wells</span>
+        </label>
+      </div>
+      <div class="dither-field">
+        <label for="weReason">Reason / note</label>
+        <input type="text" id="weReason" placeholder="e.g. insufficient volume, tube not found">
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeWellEditor()">Cancel</button>
+      <button class="btn btn-primary" onclick="applyWellEdit()">Apply change</button>
+    </div>
+  </div>
+</div>
+
 <div class="well-tooltip" id="tooltip"></div>
 
 <script>
@@ -1211,6 +1260,9 @@ let selectedWells = new Set();
 let activeSample = null;
 let originalFileName = 'manifest';
 let duplicateIds = new Set(); // input_ids that appear more than once
+let changeLog = [];           // every edit made to a filled manifest, oldest first
+let restoredFrom = null;      // which sheet a re-opened layout was read back from
+let editingWell = null;       // {plate, well} currently open in the well editor
 
 const ROWS = ['A','B','C','D','E','F','G','H'];
 const COLS = [1,2,3,4,5,6,7,8,9,10,11,12];
@@ -1225,6 +1277,14 @@ const SAMPLE_COLORS = [
 const NO_COHORT_COLOR = '#6b7494';
 let sampleColorMap = {};
 let cohortColorMap = {}; // cohort string → color
+
+try {
+  const savedUser = localStorage.getItem('phipseq_template_user');
+  if (savedUser) document.addEventListener('DOMContentLoaded', () => {
+    const el = document.getElementById('templateUser');
+    if (el) el.value = savedUser;
+  });
+} catch (e) { /* storage unavailable — the field just starts empty */ }
 
 // ─── File Upload ─────────────────────────────────────────────────────────────
 const uploadZone = document.getElementById('uploadZone');
@@ -1251,11 +1311,34 @@ function processFile(file) {
   const reader = new FileReader();
   reader.onload = e => {
     workbook = XLSX.read(e.target.result, { type: 'array' });
+    changeLog = [];
+    restoredFrom = null;
+    manualBridge = new Set();
+    plateAssignments = {};
     loadSamples();
     detectPlates();
+    // A filled manifest brings its layout and history back with it
+    const restored = restoreAssignments();
+    const priorChanges = restoreChangeLog();
+    if (restored) {
+      inferBridgingFromLayout();
+      renderPlate();
+      renderSampleList();
+      buildAssignSelect();
+      updateStats();
+    }
     document.getElementById('mainUI').classList.remove('hidden');
     uploadZone.style.display = 'none';
     document.getElementById('fileName').textContent = file.name;
+    const banner = document.getElementById('restoredBanner');
+    if (restored) {
+      banner.style.display = 'flex';
+      banner.innerHTML = `<span>↩ Filled manifest re-opened — <strong>${restored}</strong> well(s) restored from <strong>${restoredFrom}</strong>` +
+        (priorChanges ? `, carrying <strong>${priorChanges}</strong> earlier change(s)` : '') +
+        `. Click any filled well to edit it.</span>`;
+    } else {
+      banner.style.display = 'none';
+    }
   };
   reader.readAsArrayBuffer(file);
 }
@@ -1392,6 +1475,111 @@ function loadSamples() {
   buildGroupBySelect();
   renderSampleList();
   buildAssignSelect();
+}
+
+// A previously exported manifest carries its own layout. Sample Instances is
+// the authoritative source — it names the plate and wells for every usage —
+// with the Analysis grid as a fallback for files exported before that sheet
+// existed. Nothing is read from Lab Plate Maps: its cells may carry type tags.
+function restoreAssignments() {
+  const nameOf = n => workbook.SheetNames.find(x => x.toLowerCase() === n.toLowerCase());
+  const byTiu = {};
+  samples.forEach(s => { byTiu[s.tiu_id] = s; });
+  let restored = 0;
+
+  const instName = nameOf('Sample Instances');
+  if (instName) {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[instName], { header: 1 });
+    const hdr = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
+    const col = n => hdr.indexOf(n);
+    const cTiu = col('source_tiu_id'), cIn = col('source_input_id'),
+          cPlate = col('plate'), cWells = col('wells');
+    if (cTiu >= 0 && cPlate >= 0 && cWells >= 0) {
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        if (!r || !r[cTiu]) continue;
+        const plate = parseInt(r[cPlate], 10);
+        if (!Number.isFinite(plate)) continue;
+        const tiu = String(r[cTiu]).trim();
+        const input_id = cIn >= 0 && r[cIn] ? String(r[cIn]).trim()
+                                            : (byTiu[tiu] ? byTiu[tiu].input_id : tiu);
+        if (!plateAssignments[plate]) plateAssignments[plate] = {};
+        String(r[cWells] || '').split(/[,;]\s*/).forEach(w => {
+          const key = w.trim().toUpperCase();
+          if (!/^[A-H](?:[1-9]|1[0-2])$/.test(key)) return;
+          plateAssignments[plate][key] = { input_id, tiu_id: tiu };
+          restored++;
+        });
+      }
+      if (restored) { restoredFrom = 'Sample Instances'; return restored; }
+    }
+  }
+
+  const anaName = nameOf('Analysis Plate Maps');
+  if (anaName) {
+    const rows = XLSX.utils.sheet_to_json(workbook.Sheets[anaName], { header: 1 });
+    let plate = null, headerRow = -1;
+    rows.forEach((row, idx) => {
+      if (row && row[0] && String(row[0]).toUpperCase().startsWith('PLATE')) {
+        const m = String(row[0]).match(/\d+/);
+        plate = m ? parseInt(m[0], 10) : null;
+        headerRow = idx + 1;
+        return;
+      }
+      if (plate === null || idx <= headerRow) return;
+      const rowLetter = String((row || [])[0] || '').trim().toUpperCase();
+      if (!ROWS.includes(rowLetter)) return;
+      COLS.forEach((c, ci) => {
+        const raw = (row || [])[ci + 1];
+        if (raw === undefined || raw === null || String(raw).trim() === '') return;
+        const tiu = String(raw).trim().replace(/-P\d+$/, '');
+        const src = byTiu[tiu];
+        if (!plateAssignments[plate]) plateAssignments[plate] = {};
+        plateAssignments[plate][`${rowLetter}${c}`] = {
+          input_id: src ? src.input_id : tiu, tiu_id: tiu
+        };
+        restored++;
+      });
+    });
+    if (restored) restoredFrom = 'Analysis Plate Maps';
+  }
+  return restored;
+}
+
+// Carry an existing change history forward rather than starting a new one
+function restoreChangeLog() {
+  const name = workbook.SheetNames.find(x => x.toLowerCase() === 'change log');
+  if (!name) return 0;
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 });
+  const hdr = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
+  const g = (r, n) => { const i = hdr.indexOf(n); return i >= 0 && r[i] !== undefined ? String(r[i]) : ''; };
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r || !r[0]) continue;
+    changeLog.push({
+      ts: g(r, 'timestamp'), user: g(r, 'user'), plate: g(r, 'plate'), well: g(r, 'well'),
+      action: g(r, 'action'), from_lab: g(r, 'from_lab_id'), from_tiu: g(r, 'from_tiu_id'),
+      to_lab: g(r, 'to_lab_id'), to_tiu: g(r, 'to_tiu_id'), note: g(r, 'note'), prior: true
+    });
+  }
+  return changeLog.length;
+}
+
+// Anything sitting on more than one plate must have been bridged deliberately;
+// keep it in the pool so a re-opened layout behaves like the one that made it
+function inferBridgingFromLayout() {
+  const seen = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    Object.values(plateAssignments[p] || {}).forEach(a => {
+      (seen[a.tiu_id] = seen[a.tiu_id] || new Set()).add(p);
+    });
+  }
+  Object.entries(seen).forEach(([tiu, plates]) => {
+    if (plates.size > 1) {
+      const s = samples.find(x => x.tiu_id === tiu);
+      if (s && !isAnyControl(s) && !isRepeating(s)) manualBridge.add(tiu);
+    }
+  });
 }
 
 function detectPlates() {
@@ -1813,6 +2001,10 @@ function renderPlate() {
         div.title = 'Reserved for controls on this plate';
       }
 
+      if (assigned) {
+        div.addEventListener('click', () => openWellEditor(currentPlate, key));
+        div.style.cursor = 'pointer';
+      }
       div.addEventListener('mousedown', e => {
         if (assigned || locked) return;
         e.preventDefault();          // no text-drag while sweeping the plate
@@ -2850,6 +3042,120 @@ function updateStats() {
   document.getElementById('totalAssigned').textContent = total;
 }
 
+// ─── Well editor ──────────────────────────────────────────────────────────────
+function rememberUser() {
+  try { localStorage.setItem('phipseq_template_user', document.getElementById('templateUser').value); } catch (e) {}
+}
+
+function currentUser() {
+  return (document.getElementById('templateUser').value || '').trim();
+}
+
+// Wells on this plate holding the same sample — a duplicate pair is normally
+// edited together, since dropping one half of a replicate is rarely intended
+function wellsOfSampleOnPlate(plate, tiu_id) {
+  const a = plateAssignments[plate] || {};
+  return Object.keys(a).filter(k => a[k].tiu_id === tiu_id).sort();
+}
+
+function openWellEditor(plate, well) {
+  const a = (plateAssignments[plate] || {})[well];
+  if (!a) return;
+  editingWell = { plate, well };
+  const src = samples.find(x => x.tiu_id === a.tiu_id) || {};
+  const mates = wellsOfSampleOnPlate(plate, a.tiu_id);
+
+  document.getElementById('weWell').textContent = `${well} · plate ${plate}`;
+  document.getElementById('weCurrent').innerHTML =
+    `Currently <strong>${escHtml(a.input_id)}</strong> (${escHtml(a.tiu_id)})` +
+    (src.sample_type ? ` · ${escHtml(src.sample_type)}` : '') +
+    (src.cohort ? ` · ${escHtml(src.cohort)}` : '') +
+    (mates.length > 1 ? `<br>Occupies ${mates.length} wells on this plate: ${mates.join(', ')}.` : '');
+
+  const pairField = document.getElementById('wePairField');
+  pairField.style.display = mates.length > 1 ? '' : 'none';
+  document.getElementById('wePairLabel').textContent =
+    `Apply to all ${mates.length} wells (${mates.join(', ')})`;
+
+  const assignedTiuIds = getAssignedTiuIds();
+  const avail = samples.filter(x => isSampleAvailable(x, assignedTiuIds) && x.tiu_id !== a.tiu_id);
+  document.getElementById('weReplacement').innerHTML = avail.length
+    ? avail.map(x => `<option value="${x.tiu_id}">${escHtml(x.input_id)} (${escHtml(x.tiu_id)})${x.cohort ? ' · ' + escHtml(x.cohort) : ''}</option>`).join('')
+    : '<option value="">— no unassigned samples left —</option>';
+
+  document.getElementById('weAction').value = 'replace';
+  document.getElementById('weReason').value = '';
+  onWellEditAction();
+  document.getElementById('wellEditOverlay').classList.remove('hidden');
+}
+
+function closeWellEditor() {
+  document.getElementById('wellEditOverlay').classList.add('hidden');
+  editingWell = null;
+}
+
+function onWellEditAction() {
+  const act = document.getElementById('weAction').value;
+  document.getElementById('weReplaceField').style.display = act === 'replace' ? '' : 'none';
+}
+
+function logChange(entry) {
+  changeLog.push(Object.assign({
+    ts: new Date().toISOString().replace('T', ' ').slice(0, 19),
+    user: currentUser() || '(unnamed)'
+  }, entry));
+}
+
+function applyWellEdit() {
+  if (!editingWell) return;
+  const { plate, well } = editingWell;
+  const a = (plateAssignments[plate] || {})[well];
+  if (!a) { closeWellEditor(); return; }
+
+  if (!currentUser()) {
+    alert('Please enter a Template user before editing — every change is recorded against a name.');
+    document.getElementById('templateUser').focus();
+    return;
+  }
+
+  const act = document.getElementById('weAction').value;
+  const note = document.getElementById('weReason').value.trim();
+  const mates = wellsOfSampleOnPlate(plate, a.tiu_id);
+  const pairBox = document.getElementById('wePair');
+  const targets = (mates.length > 1 && pairBox.checked) ? mates : [well];
+
+  if (act === 'note') {
+    targets.forEach(k => logChange({ plate, well: k, action: 'note',
+      from_lab: a.input_id, from_tiu: a.tiu_id, to_lab: a.input_id, to_tiu: a.tiu_id, note }));
+  } else if (act === 'clear') {
+    targets.forEach(k => {
+      const cur = plateAssignments[plate][k];
+      if (!cur) return;
+      logChange({ plate, well: k, action: 'cleared',
+        from_lab: cur.input_id, from_tiu: cur.tiu_id, to_lab: '', to_tiu: '', note });
+      delete plateAssignments[plate][k];
+    });
+  } else {
+    const tiu = document.getElementById('weReplacement').value;
+    const rep = samples.find(x => x.tiu_id === tiu);
+    if (!rep) { alert('Pick a replacement sample first.'); return; }
+    targets.forEach(k => {
+      const cur = plateAssignments[plate][k];
+      logChange({ plate, well: k, action: 'replaced',
+        from_lab: cur ? cur.input_id : '', from_tiu: cur ? cur.tiu_id : '',
+        to_lab: rep.input_id, to_tiu: rep.tiu_id, note });
+      plateAssignments[plate][k] = { input_id: rep.input_id, tiu_id: rep.tiu_id };
+    });
+  }
+
+  closeWellEditor();
+  selectedWells.clear();
+  renderPlate();
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  buildAssignSelect();
+  updateStats();
+}
+
 // ─── Tooltip ──────────────────────────────────────────────────────────────────
 function showTooltip(e, key, assigned, locked) {
   const t = document.getElementById('tooltip');
@@ -2916,6 +3222,13 @@ function downloadExcel() {
   wb.SheetNames.push('Sample Instances');
   wb.Sheets['Sample Instances'] = buildInstanceSheet();
 
+  // Change Log — every edit made to a filled manifest, including any carried
+  // over from the file that was re-opened
+  if (changeLog.length) {
+    wb.SheetNames.push('Change Log');
+    wb.Sheets['Change Log'] = buildChangeLogSheet();
+  }
+
   // Design Log — records the randomisation so the layout can be reproduced
   const log = buildDesignLogSheet();
   if (log) {
@@ -2923,7 +3236,46 @@ function downloadExcel() {
     wb.Sheets['Design Log'] = log;
   }
 
-  XLSX.writeFile(wb, `${originalFileName}_filled.xlsx`);
+  XLSX.writeFile(wb, exportFileName());
+}
+
+// Stamp every export with the minute it was written, so successive revisions
+// of the same design sort by name and never silently overwrite each other.
+function exportFileName() {
+  const base = originalFileName
+    .replace(/_\d{8}-\d{4}$/, '')   // drop a stamp from a previous export
+    .replace(/_filled$/i, '');
+  const d = new Date();
+  const pad = n => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}` +
+                `-${pad(d.getHours())}${pad(d.getMinutes())}`;
+  return `${base}_filled_${stamp}.xlsx`;
+}
+
+function buildChangeLogSheet() {
+  const rows = [['timestamp', 'user', 'plate', 'well', 'action',
+                 'from_lab_id', 'from_tiu_id', 'to_lab_id', 'to_tiu_id', 'note', 'session']];
+  changeLog.forEach(c => {
+    rows.push([c.ts, c.user, c.plate, c.well, c.action,
+               c.from_lab || '', c.from_tiu || '', c.to_lab || '', c.to_tiu || '',
+               c.note || '', c.prior ? 'earlier' : 'this session']);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = autoFitColumns(rows, 9, 40);
+  for (let c = 0; c < rows[0].length; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+    if (cell) cell.s = { font: { bold: true }, fill: xlFill('FFF0EDE5'), border: XL_GRID_BORDER };
+  }
+  // edits made now are highlighted so a reviewer sees what this revision did
+  changeLog.forEach((c, i) => {
+    if (c.prior) return;
+    for (let col = 0; col < rows[0].length; col++) {
+      const cell = ws[XLSX.utils.encode_cell({ r: i + 1, c: col })];
+      if (cell) cell.s = { fill: xlFill('FFFFF3D6'), border: XL_GRID_BORDER };
+    }
+  });
+  if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
+  return ws;
 }
 
 // One row per sample-on-a-plate. The instance id carries the -Pn suffix
@@ -3000,13 +3352,43 @@ function buildInstanceSheet() {
 // group x plate composition — handy for a methods section.
 function buildDesignLogSheet() {
   const m = appliedPlanMeta;
-  if (!m || m.empty) return null;
+  if (!m || m.empty) {
+    // An edit-only session still deserves a provenance record
+    if (!changeLog.length) return null;
+    const rows = [
+      ['PhIPSeq Plate Designer — Design Log'],
+      ['Generated', new Date().toISOString()],
+      ['Template user', currentUser() || '(not recorded)'],
+      ['Source file', originalFileName],
+      ['Layout restored from', restoredFrom || '(not restored)'],
+      ['Edits this session', changeLog.filter(c => !c.prior).length],
+      ['Edits logged in total', changeLog.length],
+      [],
+      ['No autofill plan was applied in this session — see Change Log for edits.'],
+      [],
+      ['Sample types per plate (wells)'],
+      ['Plate', 'Composition', 'Mixed prep?', 'Control area']
+    ];
+    for (let p = 1; p <= totalPlates; p++) {
+      const c = plateComposition(p);
+      if (c.total > 0) rows.push([`Plate ${p}`, c.summary, c.mixed ? 'YES — wells tagged' : 'no',
+                                  describeReserved(p) + (plateReserved[p] ? ' (custom)' : '')]);
+    }
+    const ws0 = XLSX.utils.aoa_to_sheet(rows);
+    ws0['!cols'] = autoFitColumns(rows, 10, 60);
+    return ws0;
+  }
   const o = m.opts;
   const groupLabel = (GROUP_FIELDS.find(f => f.value === o.groupField) || {}).label || o.groupField;
 
   const rows = [];
   rows.push(['PhIPSeq Plate Designer — Design Log']);
   rows.push(['Generated', new Date().toISOString()]);
+  rows.push(['Template user', currentUser() || '(not recorded)']);
+  rows.push(['Source file', originalFileName]);
+  if (restoredFrom) rows.push(['Layout restored from', restoredFrom]);
+  rows.push(['Edits this session', changeLog.filter(c => !c.prior).length]);
+  rows.push(['Edits logged in total', changeLog.length]);
   rows.push([]);
   rows.push(['Parameter', 'Value']);
   rows.push(['Layout mode', o.mode === 'dither' ? 'Dither groups across plates' : 'Block fill']);
