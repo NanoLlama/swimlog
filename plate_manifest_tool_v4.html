@@ -982,6 +982,8 @@
       <div>Samples: <span id="sampleCount">0</span></div>
       <div>Plates: <span id="plateCount">0</span></div>
       <div>Total Assigned: <span id="totalAssigned">0</span> / <span id="totalWells">0</span></div>
+      <button class="btn btn-ghost" onclick="resetDesigner()" style="margin-left:auto;padding:4px 12px;font-size:11px;"
+              title="Clear this design and load a different manifest">↺ New manifest</button>
 
     </div>
 
@@ -1304,6 +1306,68 @@ uploadZone.addEventListener('drop', e => {
 function handleFile(e) {
   const file = e.target.files[0];
   if (file) processFile(file);
+}
+
+// Clear everything and go back to the upload screen. Nothing here is saved
+// anywhere, so the confirmation spells out exactly what would be lost.
+function resetDesigner() {
+  const wells = Object.values(plateAssignments)
+    .reduce((a, w) => a + Object.keys(w).length, 0);
+  const edits = changeLog.filter(c => !c.prior).length;
+
+  if (wells > 0 || edits > 0) {
+    const lines = ['Clear this design and start from a new manifest?', ''];
+    if (wells) lines.push(`• ${wells} assigned well(s) will be discarded`);
+    if (edits) lines.push(`• ${edits} unexported edit(s) will be lost`);
+    lines.push('', 'Export first if you want to keep this design.');
+    if (!confirm(lines.join('\n'))) return;
+  }
+
+  workbook = null;
+  samples = [];
+  plateAssignments = {};
+  currentPlate = 1;
+  totalPlates = 8;
+  selectedWells.clear();
+  activeSample = null;
+  originalFileName = 'manifest';
+  duplicateIds.clear();
+  sampleColorMap = {};
+  cohortColorMap = {};
+  changeLog = [];
+  restoredFrom = null;
+  editingWell = null;
+  manualBridge = new Set();
+  plateReserved = {};
+  areaUnlocked = {};
+  autofillPlan = null;
+  lastPlanMeta = null;
+  appliedPlanMeta = null;
+  dragging = false;
+  dragAnchor = null;
+  dragBase = null;
+
+  // Back to the upload screen
+  document.getElementById('mainUI').classList.add('hidden');
+  document.getElementById('autofillOverlay').classList.add('hidden');
+  document.getElementById('wellEditOverlay').classList.add('hidden');
+  uploadZone.style.display = '';
+  document.getElementById('restoredBanner').style.display = 'none';
+  document.getElementById('dupWarning').style.display = 'none';
+  document.getElementById('fileName').textContent = '—';
+  ['sampleCount', 'plateCount', 'totalAssigned', 'totalWells']
+    .forEach(id => { document.getElementById(id).textContent = '0'; });
+  document.getElementById('sampleSearch').value = '';
+  document.getElementById('assignmentList').innerHTML = '<div class="empty-state">No assignments yet</div>';
+  document.getElementById('cohortProgress').innerHTML = '<div class="empty-state">No samples loaded</div>';
+  document.getElementById('sampleList').innerHTML = '<div class="empty-state">No samples loaded</div>';
+  document.getElementById('cohortLegend').style.display = 'none';
+  document.getElementById('plateGrid').innerHTML = '';
+  const showAssigned = document.getElementById('showAssigned');
+  if (showAssigned) showAssigned.checked = false;
+  // let the same file be picked again — a change event only fires on a new value
+  document.getElementById('fileInput').value = '';
+  window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function processFile(file) {
