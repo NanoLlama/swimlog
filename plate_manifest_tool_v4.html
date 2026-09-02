@@ -1076,6 +1076,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           </div>
           <div class="divider"></div>
           <button class="btn btn-ghost" style="font-size:12px;" onclick="openControlModal()">🧪 Control Template</button>
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="openIndexModal()">🧬 Index Assignment</button>
           <button class="btn btn-ghost" style="font-size:12px;" onclick="openAutofillModal()">⚡ Autofill Plates</button>
         </div>
 
@@ -1291,6 +1292,69 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <button class="btn btn-ghost" onclick="closeAutofillModal()">Cancel</button>
       <button class="btn btn-ghost" onclick="previewAutofill()">Preview</button>
       <button class="btn btn-primary" id="applyAutofillBtn" onclick="applyAutofill()" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="autofill-modal-overlay hidden" id="indexOverlay">
+  <div class="autofill-modal" style="max-width:880px;">
+    <h2>🧬 Index assignment</h2>
+    <p style="margin-bottom:8px;">
+      Every library in a sequencing pool needs a barcode nobody else in that pool has.
+      Load the kit's own workbook rather than retyping it — a slip in a ten-base sequence
+      is not something anyone catches by eye.
+    </p>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
+      <div>
+        <label style="font-size:10px;">Index kit workbook</label><br>
+        <input type="file" id="indexFile" accept=".xlsx,.xls" onchange="handleIndexFile(event)"
+               style="font-size:11px;max-width:230px;">
+      </div>
+      <div>
+        <label for="indexSheet" style="font-size:10px;">Sheet</label>
+        <select id="indexSheet" style="width:210px;" onchange="chooseIndexSheet(this.value)"></select>
+      </div>
+      <div id="indexKitInfo" style="font-size:11px;color:var(--muted);flex:1;min-width:200px;"></div>
+    </div>
+    <div class="dither-controls" style="grid-template-columns:repeat(auto-fit,minmax(190px,1fr));">
+      <div class="dither-field">
+        <label for="indexStartPlate">Start at index plate</label>
+        <input type="number" id="indexStartPlate" min="1" value="1" onchange="previewIndexPlan()">
+        <span class="hint" id="indexCursorHint"></span>
+      </div>
+      <div class="dither-field">
+        <label for="indexMode">Assignment</label>
+        <select id="indexMode" onchange="previewIndexPlan()">
+          <option value="position">By position — index plate well → sample plate well</option>
+          <option value="draw">Sequential draw — take pairs in kit order</option>
+        </select>
+      </div>
+      <div class="dither-field">
+        <label for="indexI5">i5 orientation for the sample sheet</label>
+        <select id="indexI5" onchange="previewIndexPlan()">
+          <option value="fwd">Forward</option>
+          <option value="rc">Reverse complement</option>
+        </select>
+        <span class="hint">Ask the sequencing provider which their instrument expects.</span>
+      </div>
+      <div class="dither-field">
+        <label for="indexPool">Sequencing pools</label>
+        <select id="indexPool" onchange="onIndexPoolChange()">
+          <option value="run">One pool for the whole run</option>
+          <option value="plate">One pool per plate</option>
+          <option value="custom">Custom plate groups…</option>
+        </select>
+        <input type="text" id="indexPoolCustom" placeholder="e.g. 1-4, 5-8" style="display:none;margin-top:4px;"
+               oninput="previewIndexPlan()">
+      </div>
+    </div>
+    <div id="indexPreview" class="autofill-preview" style="margin-top:10px;">
+      <span style="color:var(--muted)">Load an index kit to begin.</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeIndexModal()">Cancel</button>
+      <button class="btn btn-ghost" onclick="previewIndexPlan()">Preview</button>
+      <button class="btn btn-primary" id="applyIndexBtn" onclick="applyIndexPlan()" disabled>Assign indexes</button>
     </div>
   </div>
 </div>
@@ -1688,6 +1752,8 @@ function resetDesigner() {
   volumePreflightShown = false;
   controlTemplate = [];
   appliedControlTemplate = null;
+  indexAssignments = {};
+  appliedIndexPlan = null;
   sourceBytes = null;
   manualBridge = new Set();
   plateReserved = {};
@@ -1742,6 +1808,8 @@ function processFile(file) {
     volumePreflightShown = false;
     controlTemplate = [];
     appliedControlTemplate = null;
+    indexAssignments = {};
+    appliedIndexPlan = null;
     manualBridge = new Set();
     plateAssignments = {};
     plateReserved = {};
@@ -4455,6 +4523,465 @@ document.addEventListener('mousemove', e => {
   }
 });
 
+// ─── Index kits ──────────────────────────────────────────────────────────────
+// After PhIP-Seq the libraries are barcoded and pooled, and the whole point of a
+// pool is that every member can be told apart afterwards. An index reused inside
+// one pool makes two samples indistinguishable in the data — unrecoverable, and
+// only discovered after sequencing. So index assignment is checked, recorded and
+// then frozen the same way instance uids are.
+//
+// The kit is read from the vendor's own workbook rather than retyped: IDT ships
+// xGen UDI as 1536 pre-plated pairs, 96 to a plate, and a transcription slip in
+// a ten-base sequence is not something anyone would catch by eye.
+let indexKit = null;          // { name, sheet, pairs: [...], plates: n }
+let indexAssignments = {};    // instance_uid -> { i7_name, i7, i5_fwd, i5_rc, well, indexPlate, pool }
+let appliedIndexPlan = null;  // what the last apply used, for the Design Log
+
+const INDEX_KIT_KEY = 'index_kit';
+const INDEX_CURSOR_KEY = 'index_cursor';
+
+function padWell(w) {
+  const m = String(w || '').trim().toUpperCase().match(/^([A-H])0*(\d{1,2})$/);
+  return m ? m[1] + m[2] : String(w || '').trim().toUpperCase();
+}
+
+// Vendor sheets are laid out for a human reader: a title block, a merged note
+// column, a header row that is not row 1. Find the header by looking for the
+// columns rather than assuming a position.
+function parseIndexSheet(wb, sheetName) {
+  const rows = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1 });
+  const norm = v => String(v === undefined || v === null ? '' : v)
+    .replace(/\s+/g, ' ').trim().toLowerCase();
+
+  let hdrRow = -1, col = {};
+  for (let i = 0; i < Math.min(rows.length, 30); i++) {
+    const r = (rows[i] || []).map(norm);
+    const find = re => r.findIndex(c => re.test(c));
+    const well = find(/^well( position)?$/);
+    const i7 = find(/^i7( index)?/);
+    if (well >= 0 && i7 >= 0) {
+      hdrRow = i;
+      col = {
+        well, i7,
+        name: find(/(primer|adapter|index) name/),
+        i5f: find(/^i5 index forward|^i5 forward|^i5 index \*?forward/),
+        i5r: find(/reverse complement/)
+      };
+      if (col.i5f < 0) col.i5f = find(/^i5/);
+      break;
+    }
+  }
+  if (hdrRow < 0) return { error: `no index table found on "${sheetName}" — expected a header row with a well position and an i7 index` };
+
+  const pairs = [];
+  const bad = [];
+  for (let i = hdrRow + 1; i < rows.length; i++) {
+    const r = rows[i] || [];
+    const well = padWell(r[col.well]);
+    const i7 = String(r[col.i7] || '').trim().toUpperCase();
+    if (!well || !/^[A-H](?:[1-9]|1[0-2])$/.test(well)) continue;
+    if (!/^[ACGT]+$/.test(i7)) { if (i7) bad.push(`row ${i + 1}: i7 "${i7}"`); continue; }
+    const i5f = String(r[col.i5f] || '').trim().toUpperCase();
+    const i5r = String(r[col.i5r] || '').trim().toUpperCase();
+    pairs.push({
+      well, i7,
+      i5_fwd: /^[ACGT]+$/.test(i5f) ? i5f : '',
+      i5_rc: /^[ACGT]+$/.test(i5r) ? i5r : '',
+      name: String(r[col.name] || '').trim()
+    });
+  }
+  if (!pairs.length) return { error: `"${sheetName}" has a header but no index rows` };
+
+  // Pre-plated kits run A1…H12 and start over; a plate is however many wells it
+  // takes to come back round to the first one.
+  let perPlate = pairs.findIndex((x, i) => i > 0 && x.well === pairs[0].well);
+  if (perPlate < 0) perPlate = pairs.length;
+  pairs.forEach((x, i) => {
+    x.indexPlate = Math.floor(i / perPlate) + 1;
+    x.ordinal = i + 1;
+  });
+  return {
+    sheet: sheetName, pairs, perPlate,
+    plates: Math.ceil(pairs.length / perPlate),
+    malformed: bad
+  };
+}
+
+// Sheets that look like an index table at all, so the picker is not a list of
+// every tab in a vendor workbook.
+function indexSheetCandidates(wb) {
+  return wb.SheetNames.filter(n => {
+    const r = parseIndexSheet(wb, n);
+    return !r.error && r.pairs.length >= 8;
+  });
+}
+
+// ── Assignment ───────────────────────────────────────────────────────────────
+function poolsForPlates(spec) {
+  // "" or "run" → one pool; "plate" → one per plate; "1-4,5-8" → as written
+  const pools = {};
+  const text = String(spec || '').trim().toLowerCase();
+  if (!text || text === 'run' || text === 'all') {
+    for (let p = 1; p <= totalPlates; p++) pools[p] = 'pool 1';
+    return pools;
+  }
+  if (text === 'plate') {
+    for (let p = 1; p <= totalPlates; p++) pools[p] = `pool ${p}`;
+    return pools;
+  }
+  text.split(/[;,]/).map(x => x.trim()).filter(Boolean).forEach((part, i) => {
+    const m = part.match(/^(\d+)\s*(?:-|–|to)\s*(\d+)$/);
+    if (m) {
+      for (let p = +m[1]; p <= +m[2]; p++) pools[p] = `pool ${i + 1}`;
+    } else if (/^\d+$/.test(part)) {
+      pools[+part] = `pool ${i + 1}`;
+    }
+  });
+  for (let p = 1; p <= totalPlates; p++) if (!pools[p]) pools[p] = `pool ${p}`;
+  return pools;
+}
+
+function hamming(a, b) {
+  if (a.length !== b.length) return Infinity;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) d++;
+  return d;
+}
+
+// Assign an index pair to every instance. By position is the pre-plated case:
+// index plate well → sample plate well, so the bench pipettes a whole plate at
+// a time. Sequential draw is for kits that are not plated to match.
+function planIndexAssignment(opts) {
+  if (!indexKit || !indexKit.pairs.length) return { error: 'No index kit loaded.' };
+  const instances = enumerateInstances();
+  if (!instances.length) return { error: 'No samples are placed yet.' };
+
+  const pools = poolsForPlates(opts.poolSpec);
+  const start = Math.max(1, parseInt(opts.startPlate, 10) || 1);
+  const byPlateWell = {};
+  indexKit.pairs.forEach(x => { byPlateWell[`${x.indexPlate}|${x.well}`] = x; });
+
+  const assigned = [];
+  const problems = [];
+  const platesUsed = new Set();
+
+  if (opts.mode === 'position') {
+    instances.forEach(inst => {
+      const ip = start + inst.plate - 1;
+      // Every well of an instance shares one library, so the index comes from
+      // the first well — the replicate pair is one prep, not two.
+      const src = byPlateWell[`${ip}|${inst.wells[0]}`];
+      if (!src) {
+        problems.push(`${inst.uid}: index plate ${ip} has no well ${inst.wells[0]}`);
+        return;
+      }
+      platesUsed.add(ip);
+      assigned.push({ inst, src, pool: pools[inst.plate] });
+    });
+  } else {
+    // Draw in kit order, skipping anything already issued in an earlier run
+    let cursor = (start - 1) * indexKit.perPlate;
+    instances.forEach(inst => {
+      const src = indexKit.pairs[cursor++];
+      if (!src) { problems.push(`${inst.uid}: the kit ran out of index pairs`); return; }
+      platesUsed.add(src.indexPlate);
+      assigned.push({ inst, src, pool: pools[inst.plate] });
+    });
+  }
+
+  // Reuse inside a pool is the failure that cannot be recovered after
+  // sequencing, so it is named by both instances rather than counted.
+  const byPool = {};
+  assigned.forEach(a => { (byPool[a.pool] = byPool[a.pool] || []).push(a); });
+  const collisions = [], nearMisses = [];
+  Object.entries(byPool).forEach(([pool, list]) => {
+    const seen = {};
+    list.forEach(a => {
+      const key = a.src.i7 + '+' + (a.src.i5_fwd || a.src.i5_rc || '');
+      if (seen[key]) {
+        collisions.push(`${pool}: ${seen[key].inst.uid} and ${a.inst.uid} both get ` +
+          `${a.src.name || key} (index plate ${a.src.indexPlate} ${a.src.well})`);
+      } else seen[key] = a;
+    });
+    // One mismatch apart is not a collision but demultiplexing usually allows a
+    // single error, so the two become ambiguous in practice.
+    const keys = Object.keys(seen);
+    for (let i = 0; i < keys.length; i++) {
+      for (let j = i + 1; j < keys.length; j++) {
+        if (hamming(keys[i], keys[j]) === 1) {
+          nearMisses.push(`${pool}: ${seen[keys[i]].inst.uid} and ${seen[keys[j]].inst.uid} ` +
+            `differ by one base (${keys[i]} vs ${keys[j]})`);
+        }
+      }
+    }
+  });
+
+  return {
+    assigned, problems, collisions, nearMisses,
+    pools, poolNames: Object.keys(byPool).sort(),
+    indexPlates: [...platesUsed].sort((a, b) => a - b),
+    colour: colourBalance(byPool, opts.i5Orientation),
+    mode: opts.mode, startPlate: start, i5Orientation: opts.i5Orientation
+  };
+}
+
+// Two-channel sequencers (NovaSeq) read G as no signal, so a cycle where every
+// index has a G is dark and the base caller has nothing to work with. Reported
+// per cycle per pool rather than as a single verdict.
+function colourBalance(byPool, orientation) {
+  const out = [];
+  Object.entries(byPool).forEach(([pool, list]) => {
+    ['i7', 'i5'].forEach(which => {
+      const seqs = list.map(a => which === 'i7' ? a.src.i7
+        : (orientation === 'rc' ? (a.src.i5_rc || a.src.i5_fwd) : (a.src.i5_fwd || a.src.i5_rc)))
+        .filter(Boolean);
+      if (!seqs.length) return;
+      const len = Math.min(...seqs.map(s => s.length));
+      const cycles = [];
+      for (let c = 0; c < len; c++) {
+        const counts = { A: 0, C: 0, G: 0, T: 0 };
+        seqs.forEach(s => { if (counts[s[c]] !== undefined) counts[s[c]]++; });
+        const n = seqs.length;
+        // NovaSeq 2-colour chemistry: A = both channels, C = red, T = green,
+        // G = dark.
+        const red = (counts.A + counts.C) / n;
+        const green = (counts.A + counts.T) / n;
+        const dark = counts.G / n;
+        const worstBase = Math.max(counts.A, counts.C, counts.G, counts.T) / n;
+        cycles.push({ cycle: c + 1, counts, red, green, dark, worstBase,
+          warn: dark > 0.5 || red < 0.1 || green < 0.1 || worstBase > 0.8 });
+      }
+      out.push({ pool, which, n: seqs.length, cycles,
+        warnings: cycles.filter(c => c.warn).length });
+    });
+  });
+  return out;
+}
+
+// ── Index UI ─────────────────────────────────────────────────────────────────
+let indexWorkbook = null;
+
+function openIndexModal() {
+  if (!samples.length) { alert('Load a manifest first.'); return; }
+  loadStoredIndexKit().then(() => {
+    document.getElementById('indexOverlay').classList.remove('hidden');
+    previewIndexPlan();
+  });
+}
+
+function closeIndexModal() {
+  document.getElementById('indexOverlay').classList.add('hidden');
+}
+
+function handleIndexFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      indexWorkbook = XLSX.read(ev.target.result, { type: 'array' });
+    } catch (err) {
+      alert('That file could not be read as a workbook (' + err.message + ').');
+      return;
+    }
+    const cands = indexSheetCandidates(indexWorkbook);
+    const sel = document.getElementById('indexSheet');
+    sel.innerHTML = cands.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
+    if (!cands.length) {
+      document.getElementById('indexKitInfo').innerHTML =
+        `<span style="color:#b84040;">No index table found in that workbook. ` +
+        `Expected a sheet with a well position column and an i7 index column.</span>`;
+      return;
+    }
+    // A vendor workbook holds several kits; prefer the one with the most pairs,
+    // which is the plated set rather than a single-plate legacy sheet.
+    const best = cands.map(n => ({ n, k: parseIndexSheet(indexWorkbook, n) }))
+      .sort((a, b) => b.k.pairs.length - a.k.pairs.length)[0];
+    sel.value = best.n;
+    chooseIndexSheet(best.n);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function chooseIndexSheet(name) {
+  if (!indexWorkbook || !name) return;
+  const kit = parseIndexSheet(indexWorkbook, name);
+  if (kit.error) {
+    document.getElementById('indexKitInfo').innerHTML = `<span style="color:#b84040;">${escHtml(kit.error)}</span>`;
+    return;
+  }
+  indexKit = kit;
+  saveIndexKit();
+  showIndexKitInfo();
+  previewIndexPlan();
+}
+
+function showIndexKitInfo() {
+  const box = document.getElementById('indexKitInfo');
+  if (!box) return;
+  if (!indexKit) { box.textContent = 'No kit loaded.'; return; }
+  box.innerHTML = `<strong>${escHtml(indexKit.sheet)}</strong> — ${indexKit.pairs.length} index pair(s), ` +
+    `${indexKit.perPlate} per plate, ${indexKit.plates} plate(s)` +
+    (indexKit.malformed && indexKit.malformed.length
+      ? `<br><span style="color:#c4851c;">⚠ ${indexKit.malformed.length} row(s) skipped: ` +
+        `${escHtml(indexKit.malformed.slice(0, 3).join('; '))}</span>` : '');
+}
+
+function onIndexPoolChange() {
+  const custom = document.getElementById('indexPool').value === 'custom';
+  document.getElementById('indexPoolCustom').style.display = custom ? '' : 'none';
+  previewIndexPlan();
+}
+
+function readIndexOptions() {
+  const poolSel = document.getElementById('indexPool').value;
+  return {
+    mode: document.getElementById('indexMode').value,
+    startPlate: parseInt(document.getElementById('indexStartPlate').value, 10) || 1,
+    i5Orientation: document.getElementById('indexI5').value,
+    poolSpec: poolSel === 'custom' ? document.getElementById('indexPoolCustom').value : poolSel
+  };
+}
+
+let lastIndexPlan = null;
+
+function previewIndexPlan() {
+  const box = document.getElementById('indexPreview');
+  const btn = document.getElementById('applyIndexBtn');
+  if (!box) return;
+  showIndexKitInfo();
+  if (!indexKit) {
+    box.innerHTML = '<span style="color:var(--muted)">Load an index kit to begin.</span>';
+    btn.disabled = true;
+    return;
+  }
+  const plan = planIndexAssignment(readIndexOptions());
+  lastIndexPlan = plan;
+  if (plan.error) {
+    box.innerHTML = `<span class="warn">${escHtml(plan.error)}</span>`;
+    btn.disabled = true;
+    return;
+  }
+
+  const already = plan.assigned.filter(a => indexAssignments[a.inst.uid]).length;
+  const blocked = plan.collisions.length || plan.problems.length;
+  btn.disabled = !!blocked;
+
+  const pct = x => (x * 100).toFixed(0) + '%';
+  const colourRows = plan.colour.map(c => {
+    const worst = c.cycles.filter(x => x.warn)
+      .map(x => `cycle ${x.cycle} (${pct(x.dark)} G)`).slice(0, 4).join(', ');
+    return `<tr><td class="g">${escHtml(c.pool)} · ${c.which}</td><td>${c.n}</td>
+      <td>${c.cycles.length}</td>
+      <td${c.warnings ? ' style="color:#b84040;font-weight:600;"' : ''}>${c.warnings || 'none'}</td>
+      <td style="text-align:left;">${escHtml(worst)}</td></tr>`;
+  }).join('');
+
+  box.innerHTML =
+    `<div class="pv-head">` +
+    `${plan.assigned.length} instance(s) → index plate(s) <strong>${plan.indexPlates.join(', ') || '—'}</strong>` +
+    ` · ${plan.poolNames.length} pool(s): ${escHtml(plan.poolNames.join(', '))}` +
+    ` · i5 ${plan.i5Orientation === 'rc' ? 'reverse complement' : 'forward'}` +
+    (already ? `<br>${already} instance(s) already have an index — those are kept as issued.` : '') +
+    `</div>` +
+    (plan.problems.length
+      ? `<div class="pv-notes"><span class="warn">⚠ ${plan.problems.length} instance(s) could not be given an index:</span><br>` +
+        plan.problems.slice(0, 6).map(escHtml).join('<br>') +
+        (plan.problems.length > 6 ? `<br>…and ${plan.problems.length - 6} more` : '') + `</div>` : '') +
+    (plan.collisions.length
+      ? `<div class="pv-notes"><span class="warn">✕ ${plan.collisions.length} index collision(s) inside a pool — ` +
+        `these two libraries could not be told apart after sequencing:</span><br>` +
+        plan.collisions.slice(0, 6).map(escHtml).join('<br>') +
+        (plan.collisions.length > 6 ? `<br>…and ${plan.collisions.length - 6} more` : '') + `</div>` : '')  +
+    (plan.nearMisses.length
+      ? `<div class="pv-notes"><span class="warn">⚠ ${plan.nearMisses.length} pair(s) differ by a single base — ` +
+        `demultiplexing usually allows one mismatch, so these become ambiguous:</span><br>` +
+        plan.nearMisses.slice(0, 4).map(escHtml).join('<br>') + `</div>` : '') +
+    `<div class="pv-fill"><div class="pv-fill-h">Colour balance per pool — two-channel instruments read G as no signal</div>
+      <table class="balance-table" style="width:auto;min-width:400px;">
+        <tr><th class="g">Pool</th><th>Libraries</th><th>Cycles</th><th>Flagged</th><th style="text-align:left;">Worst cycles</th></tr>
+        ${colourRows}
+      </table></div>`;
+}
+
+function applyIndexPlan() {
+  const plan = lastIndexPlan;
+  if (!plan || plan.error || plan.collisions.length || plan.problems.length) return;
+
+  // Issued is issued: an index already bound to an instance is never quietly
+  // moved, for the same reason the instance uid is not — a barcode that changes
+  // after the libraries are made is a silent data-linking failure.
+  let kept = 0, added = 0;
+  plan.assigned.forEach(a => {
+    if (indexAssignments[a.inst.uid]) { kept++; return; }
+    indexAssignments[a.inst.uid] = {
+      name: a.src.name, well: a.src.well, indexPlate: a.src.indexPlate,
+      i7: a.src.i7, i5_fwd: a.src.i5_fwd, i5_rc: a.src.i5_rc,
+      pool: a.pool, orientation: plan.i5Orientation
+    };
+    added++;
+  });
+
+  appliedIndexPlan = {
+    mode: plan.mode, startPlate: plan.startPlate, i5Orientation: plan.i5Orientation,
+    kit: indexKit ? indexKit.sheet : '', indexPlates: plan.indexPlates.slice(),
+    pools: plan.poolNames.slice(),
+    colourWarnings: plan.colour.reduce((a, c) => a + c.warnings, 0),
+    assignedAt: new Date().toISOString()
+  };
+  // Remember where the kit was left, so the next run starts on a fresh plate
+  // rather than reissuing barcodes this one already used.
+  const highest = plan.indexPlates[plan.indexPlates.length - 1];
+  if (highest) saveIndexCursor(highest + 1);
+
+  mutate('indexes_assigned', { plate: '—', well: '—', count: added,
+    note: `${added} new, ${kept} kept · index plate(s) ${plan.indexPlates.join(', ')} · ` +
+          `${plan.poolNames.length} pool(s) · i5 ${plan.i5Orientation}` });
+  closeIndexModal();
+  alert(`${added} index pair(s) assigned` + (kept ? `, ${kept} kept from an earlier assignment` : '') +
+        `.\n\nIndex plate(s) used: ${plan.indexPlates.join(', ')}.\n` +
+        `They are written to the Index Assignments sheet on export.`);
+}
+
+// The kit and the cursor live in IndexedDB with the session autosave: a lab uses
+// the same kit for months, and re-uploading it every run invites picking the
+// wrong sheet.
+function saveIndexKit() {
+  if (!indexKit) return;
+  sessionTx('readwrite', st => st.put({
+    sheet: indexKit.sheet, pairs: indexKit.pairs, perPlate: indexKit.perPlate,
+    plates: indexKit.plates, malformed: indexKit.malformed || []
+  }, INDEX_KIT_KEY)).catch(() => {});
+}
+
+function saveIndexCursor(next) {
+  sessionTx('readwrite', st => st.put({ nextPlate: next, at: new Date().toISOString() },
+    INDEX_CURSOR_KEY)).catch(() => {});
+}
+
+function loadStoredIndexKit() {
+  return Promise.all([
+    sessionTx('readonly', st => st.get(INDEX_KIT_KEY)).catch(() => null),
+    sessionTx('readonly', st => st.get(INDEX_CURSOR_KEY)).catch(() => null)
+  ]).then(([kit, cursor]) => {
+    if (kit && kit.pairs && !indexKit) indexKit = kit;
+    const hint = document.getElementById('indexCursorHint');
+    if (cursor && cursor.nextPlate) {
+      const el = document.getElementById('indexStartPlate');
+      if (el && !el.dataset.touched) el.value = cursor.nextPlate;
+      if (hint) hint.textContent =
+        `Last run finished on plate ${cursor.nextPlate - 1}; the first set is plates 1–8, the second 9–16.`;
+    } else if (hint) {
+      hint.textContent = 'Plates are used in order — the first set is 1–8, the second 9–16.';
+    }
+    const sel = document.getElementById('indexSheet');
+    if (indexKit && sel && !sel.options.length) {
+      sel.innerHTML = `<option value="${escHtml(indexKit.sheet)}">${escHtml(indexKit.sheet)}</option>`;
+    }
+    showIndexKitInfo();
+  });
+}
+
 // ─── Balance diagnostics ─────────────────────────────────────────────────────
 // Stratification is single-factor: you balance on cohort or sex or diagnosis,
 // never all three. Everything you did not stratify on is left to chance, and
@@ -5449,6 +5976,13 @@ function downloadExcel() {
   wb.SheetNames.push('Sample Instances');
   wb.Sheets['Sample Instances'] = buildInstanceSheet();
 
+  // Index Assignments — what the sequencing provider needs, one row per library
+  const idx = buildIndexSheet();
+  if (idx) {
+    wb.SheetNames.push('Index Assignments');
+    wb.Sheets['Index Assignments'] = idx;
+  }
+
   // Change Log — every edit made to a filled manifest, including any carried
   // over from the file that was re-opened
   if (changeLog.length) {
@@ -5544,63 +6078,106 @@ function mintInstanceUid(tiu_id, plate) {
   return uid;
 }
 
-function buildInstanceSheet() {
-  const META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
-                'sample_type_detail', 'volume_mL', 'collection_date', 'cohort',
-                'num_freeze_thaws', 'diagnosis', 'dither_group', 'notes'];
-
-  // How many plates each sample sits on decides whether it needs a suffix
+// One physical usage of a sample: a tiu_id on a plate, with the wells it holds
+// there. This is the unit a library prep, a barcode and a sequencing read all
+// attach to, so the instance sheet, the index assignment and the worklist all
+// enumerate it the same way rather than each rebuilding it slightly differently.
+function enumerateInstances() {
   const platesOf = {};
   for (let p = 1; p <= totalPlates; p++) {
     Object.values(plateAssignments[p] || {}).forEach(a => {
       (platesOf[a.input_id] = platesOf[a.input_id] || new Set()).add(p);
     });
   }
+  const wellRank = {};
+  getSampleSlots().forEach((k, i) => { wellRank[k] = i; });
+
+  const out = [];
+  for (let p = 1; p <= totalPlates; p++) {
+    const wellsBySample = {};
+    Object.entries(plateAssignments[p] || {}).forEach(([well, a]) => {
+      const k = a.tiu_id + '|' + a.input_id;
+      if (!wellsBySample[k]) wellsBySample[k] = { tiu_id: a.tiu_id, input_id: a.input_id, wells: [] };
+      wellsBySample[k].wells.push(well);
+    });
+    Object.values(wellsBySample)
+      .sort((a, b) => (wellRank[a.wells[0]] ?? 999) - (wellRank[b.wells[0]] ?? 999))
+      .forEach(entry => {
+        entry.wells.sort((a, b) => (wellRank[a] ?? 999) - (wellRank[b] ?? 999));
+        const all = [...(platesOf[entry.input_id] || [p])].sort((a, b) => a - b);
+        out.push({
+          uid: mintInstanceUid(entry.tiu_id, p),
+          tiu_id: entry.tiu_id, input_id: entry.input_id, plate: p,
+          wells: entry.wells, sample: byTiu[entry.tiu_id] || {},
+          platesUsed: all, repeated: all.length > 1,
+          instanceNo: all.indexOf(p) + 1
+        });
+      });
+  }
+  return out;
+}
+
+function buildInstanceSheet() {
+  const META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
+                'sample_type_detail', 'volume_mL', 'collection_date', 'cohort',
+                'num_freeze_thaws', 'diagnosis', 'dither_group', 'notes'];
 
   const rows = [];
   rows.push(['instance_uid', 'instance_id', 'lab_instance_id', 'source_tiu_id', 'source_input_id',
              'plate', 'wells', 'n_wells', 'instance_no', 'instances_total',
              'repeated_across_plates', ...META]);
 
-  const slotOrder = getSampleSlots();
-  const wellRank = {};
-  slotOrder.forEach((k, i) => { wellRank[k] = i; });
+  enumerateInstances().forEach(entry => {
+    const all = entry.platesUsed, p = entry.plate, repeated = entry.repeated;
+    const suffix = repeated ? `-P${p}` : '';
+    const src = entry.sample;
+    rows.push([
+      entry.uid,
+      entry.tiu_id + suffix,
+      entry.input_id + suffix,
+      entry.tiu_id,
+      entry.input_id,
+      p,
+      entry.wells.join(', '),
+      entry.wells.length,
+      all.indexOf(p) + 1,
+      all.length,
+      repeated ? 'yes' : 'no',
+      ...META.map(k => src[k] === undefined ? '' : src[k])
+    ]);
+  });
 
-  for (let p = 1; p <= totalPlates; p++) {
-    const assignments = plateAssignments[p] || {};
-    // group this plate's wells by sample
-    const wellsBySample = {};
-    Object.entries(assignments).forEach(([well, a]) => {
-      const k = a.tiu_id + '|' + a.input_id;
-      if (!wellsBySample[k]) wellsBySample[k] = { tiu_id: a.tiu_id, input_id: a.input_id, wells: [] };
-      wellsBySample[k].wells.push(well);
-    });
-
-    Object.values(wellsBySample)
-      .sort((a, b) => (wellRank[a.wells[0]] ?? 999) - (wellRank[b.wells[0]] ?? 999))
-      .forEach(entry => {
-        const all = [...(platesOf[entry.input_id] || [p])].sort((a, b) => a - b);
-        const repeated = all.length > 1;
-        const suffix = repeated ? `-P${p}` : '';
-        const src = byTiu[entry.tiu_id] || {};
-        entry.wells.sort((a, b) => (wellRank[a] ?? 999) - (wellRank[b] ?? 999));
-        rows.push([
-          mintInstanceUid(entry.tiu_id, p),
-          entry.tiu_id + suffix,
-          entry.input_id + suffix,
-          entry.tiu_id,
-          entry.input_id,
-          p,
-          entry.wells.join(', '),
-          entry.wells.length,
-          all.indexOf(p) + 1,
-          all.length,
-          repeated ? 'yes' : 'no',
-          ...META.map(k => src[k] === undefined ? '' : src[k])
-        ]);
-      });
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = autoFitColumns(rows, 8, 30);
+  for (let c = 0; c < rows[0].length; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+    if (cell) cell.s = { font: { bold: true }, fill: xlFill('FFF0EDE5'), border: XL_GRID_BORDER };
   }
+  if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
+  return ws;
+}
 
+// One row per library, in the shape a sequencing provider asks for. Written
+// only once indexes have actually been assigned — an empty sheet of headers
+// invites someone to fill it in by hand, which is the thing this replaces.
+function buildIndexSheet() {
+  const instances = enumerateInstances().filter(i => indexAssignments[i.uid]);
+  if (!instances.length) return null;
+  const rows = [['instance_uid', 'plate', 'wells', 'pool', 'index_plate', 'index_well',
+                 'index_name', 'i7_name', 'i7_sequence', 'i5_name', 'i5_sequence',
+                 'i5_orientation', 'i5_forward', 'i5_reverse_complement',
+                 'source_tiu_id', 'source_input_id', 'sample_type']];
+  instances.forEach(i => {
+    const a = indexAssignments[i.uid];
+    const i5 = a.orientation === 'rc' ? (a.i5_rc || a.i5_fwd) : (a.i5_fwd || a.i5_rc);
+    rows.push([
+      i.uid, i.plate, i.wells.join(', '), a.pool, a.indexPlate, a.well,
+      a.name || '', a.name || '', a.i7, a.name || '', i5,
+      a.orientation === 'rc' ? 'reverse complement' : 'forward',
+      a.i5_fwd || '', a.i5_rc || '',
+      i.tiu_id, i.input_id, i.sample.sample_type || ''
+    ]);
+  });
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = autoFitColumns(rows, 8, 30);
   for (let c = 0; c < rows[0].length; c++) {
@@ -5680,6 +6257,35 @@ function edgeExposureRows(groupField) {
   return rows;
 }
 
+// Provenance for the barcodes: which kit, which plates, which orientation, and
+// how many libraries carry an index — enough for someone to check a sample
+// sheet against the design without opening the tool.
+function indexAssignmentRows() {
+  const n = Object.keys(indexAssignments).length;
+  if (!n) return [];
+  const m = appliedIndexPlan || {};
+  const plates = {};
+  Object.values(indexAssignments).forEach(a => { plates[a.indexPlate] = (plates[a.indexPlate] || 0) + 1; });
+  const pools = {};
+  Object.values(indexAssignments).forEach(a => { pools[a.pool] = (pools[a.pool] || 0) + 1; });
+  const rows = [[], ['Index assignment'],
+    ['Kit sheet', m.kit || '(not recorded)'],
+    ['Assignment mode', m.mode === 'draw' ? 'Sequential draw' : 'By position (index well → sample well)'],
+    ['Started at index plate', m.startPlate || ''],
+    ['i5 orientation on the sample sheet', m.i5Orientation === 'rc' ? 'reverse complement' : 'forward'],
+    ['Libraries indexed', n],
+    ['Colour-balance cycles flagged', m.colourWarnings === undefined ? '' : m.colourWarnings],
+    ['Assigned at', m.assignedAt || ''],
+    [],
+    ['Index plate', 'Libraries']];
+  Object.keys(plates).map(Number).sort((a, b) => a - b)
+    .forEach(p => rows.push([p, plates[p]]));
+  rows.push([]);
+  rows.push(['Pool', 'Libraries']);
+  Object.keys(pools).sort().forEach(k => rows.push([k, pools[k]]));
+  return rows;
+}
+
 function bridgeCoverageRows() {
   const cov = bridgeCoverage();
   const used = Object.keys(cov.perPlate).filter(p => cov.perPlate[p].length);
@@ -5730,6 +6336,7 @@ function buildDesignLogSheet() {
     // else still needs to say what was stamped.
     controlTemplateRows().forEach(r => rows.push(r));
     bridgeCoverageRows().forEach(r => rows.push(r));
+    indexAssignmentRows().forEach(r => rows.push(r));
     const ws0 = XLSX.utils.aoa_to_sheet(rows);
     ws0['!cols'] = autoFitColumns(rows, 10, 60);
     return ws0;
@@ -5827,6 +6434,7 @@ function buildDesignLogSheet() {
   }
   controlTemplateRows().forEach(r => rows.push(r));
   bridgeCoverageRows().forEach(r => rows.push(r));
+  indexAssignmentRows().forEach(r => rows.push(r));
   edgeExposureRows(o.groupField).forEach(r => rows.push(r));
   balanceDiagnosticRows(o.groupField).forEach(r => rows.push(r));
   if (m.unplaced.length) {
@@ -5919,6 +6527,8 @@ function buildDesignState() {
     freeze_thaw_max: freezeThawMax,
     volume_resolution: volumeResolution,
     control_template: appliedControlTemplate,
+    index_assignments: indexAssignments,
+    index_plan: appliedIndexPlan,
     assignments,
     change_log: changeLog
   };
@@ -5974,6 +6584,8 @@ function applyDesignState(st) {
   freezeThawMax = Number.isFinite(st.freeze_thaw_max) ? st.freeze_thaw_max : null;
   volumeResolution = Object.assign({}, st.volume_resolution || {});
   appliedControlTemplate = st.control_template || null;
+  indexAssignments = Object.assign({}, st.index_assignments || {});
+  appliedIndexPlan = st.index_plan || null;
   if (appliedControlTemplate && appliedControlTemplate.entries) {
     controlTemplate = appliedControlTemplate.entries.map(e => Object.assign({}, e));
   }
