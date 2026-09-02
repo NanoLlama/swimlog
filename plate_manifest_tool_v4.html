@@ -1242,6 +1242,21 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         </label>
       </div>
       <div class="dither-field" style="grid-column:1 / -1;">
+        <label>Bridging</label>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">
+          <div>
+            <label for="minBridges" style="font-size:10px;">Minimum bridges per plate</label>
+            <input type="number" id="minBridges" min="0" step="1" value="2" style="width:110px;"
+                   oninput="autofillOptionChanged()">
+          </div>
+          <label class="toggle-wrap" style="margin:0;flex:1;min-width:280px;">
+            <input type="checkbox" id="rotateBridges" onchange="autofillOptionChanged()">
+            <span>Keep the first bridge in a fixed well on every plate, but rotate the rest
+                  to seeded positions — otherwise plate effect and position effect cannot be separated</span>
+          </label>
+        </div>
+      </div>
+      <div class="dither-field" style="grid-column:1 / -1;">
         <label>Volume check <span class="hint" style="display:inline;font-weight:400;">— values are this lab's; edit them for yours</span></label>
         <label class="toggle-wrap">
           <input type="checkbox" id="volumeCheckOn" checked onchange="autofillOptionChanged()">
@@ -3237,6 +3252,8 @@ function readAutofillOptions() {
     sampleOrder: document.getElementById('sampleOrder').value,
     keepSubjectTogether: document.getElementById('keepSubjectTogether').checked,
     partitionByType: document.getElementById('partitionByType').checked,
+    rotateBridges: document.getElementById('rotateBridges').checked,
+    minBridges: parseInt(document.getElementById('minBridges').value, 10) || 0,
     replicates: parseInt(document.getElementById('replicateCount').value, 10) || 2
   };
 }
@@ -3401,17 +3418,35 @@ function computeAutofillPlan(opts) {
       }
       const active = pool.slice(0, needed);
 
-      // Place bridgeList samples first so they take the same well on every plate
+      // Bridges are placed before the pool competes for wells.
+      //
+      // Pinning every bridge to the same chunk on every plate makes it easy to
+      // find at the bench, but it also means the anchor is only ever measured
+      // in one physical position, so a plate effect and a position effect
+      // cannot be told apart. With rotation on, the first bridge keeps its
+      // fixed well — that is the one someone looks for — and the rest move to
+      // seeded positions that differ per plate.
       active.forEach(p => {
+        const rotate = !!opts.rotateBridges;
+        let spare = null;
+        if (rotate) {
+          spare = [];
+          for (let c = 1; c < capacity[p]; c++) spare.push(c);
+          shuffleInPlace(spare, makeRng(hashSeed(`${opts.seed}|bridge|${p}`)));
+        }
+        let rank = 0;
         bridgeList.forEach((b, bi) => {
           const spec = repeatSpec(b);
           if (spec !== 'all' && spec.indexOf(p) < 0) return;
           const already = Object.values(plateAssignments[p] || {}).some(a => a.input_id === b.input_id);
           if (already) return;
           if (capacity[p] - used[p] < 1 || bi >= capacity[p]) return;
+          const chunk = !rotate ? bi : (rank === 0 ? 0 : spare.shift());
+          rank++;
+          if (chunk === undefined || chunk >= capacity[p]) return;
           placeUnit(p, { id: b.tiu_id, label: b.input_id, subject_id: b.subject_id,
                          group: BRIDGE_GROUP, samples: [b],
-                         order: -1, pinned: true, fixedChunk: bi });
+                         order: -1, pinned: true, fixedChunk: chunk });
         });
       });
       const reserve = pool.slice(needed);
@@ -3819,6 +3854,13 @@ function previewAutofill() {
       `${e.need} plate(s) and has ${totalPlates}.</span> ` +
       `<button class="btn btn-primary" style="padding:2px 10px;font-size:11px;" ` +
       `onclick="addPlatesAndReplan(${short})">＋ Add ${short} plate(s) and re-run</button>`);
+  }
+  const cov = coverageForPlan(res);
+  if (cov.minimum > 0 && cov.short.length) {
+    notes.push(`<span class="warn">⚠ Bridge coverage: plate(s) ${cov.short.join(', ')} would carry ` +
+      `fewer than ${cov.minimum} bridging sample(s).</span> Batch correction has nothing to anchor ` +
+      `on a plate without one — mark a sample <code>repeat_across_plates</code>, bridge one by hand, ` +
+      `or stamp a control template.`);
   }
   const volEx = (res.volumeExcluded || []).length, volSing = (res.volumeSinglet || []).length;
   if (volEx || volSing) {
@@ -4254,6 +4296,55 @@ document.addEventListener('mousemove', e => {
     t.style.top = (e.clientY + 12) + 'px';
   }
 });
+
+// ─── Bridge coverage ─────────────────────────────────────────────────────────
+// A bridge is any sample that appears on more than one plate: an anchor serum
+// marked repeat_across_plates, a sample bridged by hand, or — as this lab
+// actually works — a monoclonal control stamped onto every plate. Batch
+// correction has nothing to work with on a plate that carries none, and until
+// now nothing checked that every plate had any.
+//
+// Coverage is read from wells rather than from intent, so it stays true after
+// hand edits and counts stamped controls without being told about them.
+function bridgeCoverage(assignmentsByPlate, plates) {
+  const src = assignmentsByPlate || plateAssignments;
+  const list = plates || Array.from({ length: totalPlates }, (_, i) => i + 1);
+  const platesOf = {};
+  list.forEach(p => Object.values(src[p] || {}).forEach(a => {
+    (platesOf[a.tiu_id] = platesOf[a.tiu_id] || new Set()).add(p);
+  }));
+  const perPlate = {};
+  list.forEach(p => { perPlate[p] = []; });
+  Object.entries(platesOf).forEach(([tiu, set]) => {
+    if (set.size < 2) return;                       // on one plate only: not a bridge
+    set.forEach(p => {
+      // Sort by row then column number — a plain string sort puts E10 before E9
+      const wells = Object.keys(src[p] || {}).filter(w => src[p][w].tiu_id === tiu)
+        .sort((a, b) => a[0].localeCompare(b[0]) || parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10));
+      perPlate[p].push({ tiu_id: tiu, input_id: (byTiu[tiu] || {}).input_id || tiu, wells });
+    });
+  });
+  const minimum = minBridgesRequired();
+  const short = list.filter(p => Object.keys(src[p] || {}).length > 0 &&
+                                 perPlate[p].length < minimum);
+  return { perPlate, short, minimum };
+}
+
+function minBridgesRequired() {
+  const el = document.getElementById('minBridges');
+  const n = el ? parseInt(el.value, 10) : 2;
+  return Number.isFinite(n) && n >= 0 ? n : 2;
+}
+
+// The plan's own assignments, merged with what is already on the plates, which
+// is what the run will actually look like once it is applied.
+function coverageForPlan(res) {
+  const merged = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    merged[p] = Object.assign({}, plateAssignments[p] || {}, (res.plan || {})[p] || {});
+  }
+  return bridgeCoverage(merged);
+}
 
 // ─── Control templates ───────────────────────────────────────────────────────
 // Controls are never auto-filled, so the reserved area was laid out by hand on
@@ -4987,6 +5078,16 @@ function closeValidation() {
 function downloadExcel() {
   if (!workbook) { alert('No file loaded.'); return; }
 
+  // Blocking, but not a veto: a run really may be designed without bridges,
+  // and the person exporting is the one who knows.
+  const cov = bridgeCoverage();
+  if (cov.minimum > 0 && cov.short.length) {
+    if (!confirm(`Plate(s) ${cov.short.join(', ')} carry fewer than ${cov.minimum} ` +
+        `bridging sample(s).\n\nA plate with no sample in common with any other cannot be ` +
+        `batch-corrected against the rest of the run.\n\nSet the minimum to 0 under ` +
+        `Autofill → Bridging if this run is meant to have none.\n\nExport anyway?`)) return;
+  }
+
   const wb = XLSX.utils.book_new();
 
   // Copy Input Samples sheet unchanged
@@ -5191,6 +5292,29 @@ function controlTemplateRows() {
   return rows;
 }
 
+// Where each bridge physically sits, per plate — the thing an analyst needs to
+// know to use them as anchors, and the thing rotation deliberately varies.
+function bridgeCoverageRows() {
+  const cov = bridgeCoverage();
+  const used = Object.keys(cov.perPlate).filter(p => cov.perPlate[p].length);
+  if (!used.length) {
+    return [[], ['Bridging'], ['No sample appears on more than one plate — this run has no bridges.']];
+  }
+  const rows = [[], ['Bridging'],
+    ['Minimum required per plate', cov.minimum],
+    ['Plates below the minimum', cov.short.length ? cov.short.join(', ') : 'none'],
+    ['Plate', 'Bridges', 'Sample', 'Wells']];
+  Object.keys(cov.perPlate).map(Number).sort((a, b) => a - b).forEach(p => {
+    const list = cov.perPlate[p];
+    if (!list.length) return;
+    list.forEach((bref, i) => {
+      rows.push([i === 0 ? `Plate ${p}` : '', i === 0 ? list.length : '',
+                 bref.input_id, bref.wells.join(', ')]);
+    });
+  });
+  return rows;
+}
+
 function buildDesignLogSheet() {
   const m = appliedPlanSummary;
   if (!m) {
@@ -5219,6 +5343,7 @@ function buildDesignLogSheet() {
     // A control-only session is a real one: stamping the templates and nothing
     // else still needs to say what was stamped.
     controlTemplateRows().forEach(r => rows.push(r));
+    bridgeCoverageRows().forEach(r => rows.push(r));
     const ws0 = XLSX.utils.aoa_to_sheet(rows);
     ws0['!cols'] = autoFitColumns(rows, 10, 60);
     return ws0;
@@ -5313,6 +5438,7 @@ function buildDesignLogSheet() {
     });
   }
   controlTemplateRows().forEach(r => rows.push(r));
+  bridgeCoverageRows().forEach(r => rows.push(r));
   if (m.unplaced.length) {
     rows.push([]);
     rows.push(['Unplaced — not enough plate capacity']);
