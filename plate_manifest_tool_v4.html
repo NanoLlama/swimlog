@@ -1083,6 +1083,8 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           <div style="display:flex; gap:8px;">
             <button class="btn btn-ghost" id="undoBtn" onclick="undo()" disabled
                     title="Nothing to undo">↶ Undo</button>
+            <button class="btn btn-ghost" onclick="openValidation()"
+                    title="Check the whole design against the rules the bench relies on">✓ Validate layout</button>
             <button class="btn btn-ghost" onclick="clearPlate()">Clear Plate</button>
             <button class="btn btn-primary" onclick="downloadExcel()">⬇ Export Excel</button>
           </div>
@@ -1226,6 +1228,17 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <button class="btn btn-ghost" onclick="closeAutofillModal()">Cancel</button>
       <button class="btn btn-ghost" onclick="previewAutofill()">Preview</button>
       <button class="btn btn-primary" id="applyAutofillBtn" onclick="applyAutofill()" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="autofill-modal-overlay hidden" id="validateOverlay">
+  <div class="autofill-modal" style="max-width:720px;">
+    <h2>✓ Layout validation</h2>
+    <p id="vaSummary" style="margin-bottom:4px;"></p>
+    <div id="vaBody" style="max-height:52vh;overflow:auto;margin:10px 0;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeValidation()">Close</button>
     </div>
   </div>
 </div>
@@ -3782,6 +3795,216 @@ document.addEventListener('mousemove', e => {
     t.style.top = (e.clientY + 12) + 'px';
   }
 });
+
+// ─── Layout validation ───────────────────────────────────────────────────────
+// The invariant tests check what the planner produces. They cannot check what a
+// person then does to it by hand, which is where the design is most likely to
+// go wrong: a replicate broken out of its pair, a control dropped in the sample
+// area, a subject split across two plates. This runs the same rules against the
+// live design and names the wells, because "invalid" is useless at a bench.
+//
+// Findings are graded. An error is something the bench must not pipette; a
+// warning is something a person may have meant but probably did not; a note is
+// bookkeeping. Deliberate choices the tool supports — an unlocked control area,
+// a declared bridge — are never reported as failures.
+function currentLayoutOpts() {
+  const el = id => document.getElementById(id);
+  const applied = appliedPlanSummary && appliedPlanSummary.opts;
+  return {
+    replicates: applied ? Number(applied.replicates) || 2
+                        : parseInt((el('replicateCount') || {}).value, 10) || 2,
+    layout: applied ? applied.layout : ((el('replicateLayout') || {}).value || 'pair-down'),
+    keepSubjectTogether: applied ? !!applied.keepSubjectTogether
+                                 : !!(el('keepSubjectTogether') || {}).checked
+  };
+}
+
+// The replicate chunk a well belongs to, under the layout in force. Two wells
+// are proper replicates exactly when they share a chunk.
+function chunkIndexOf(well, layout) {
+  const slots = getSampleSlots(layout);
+  const i = slots.indexOf(well);
+  return i < 0 ? -1 : i;
+}
+
+function validateLayout() {
+  const opts = currentLayoutOpts();
+  const reps = opts.replicates;
+  const slots = getSampleSlots(opts.layout);
+  const chunkOf = {};                       // well -> chunk index, under this layout
+  for (let i = 0; i + reps <= slots.length; i += reps) {
+    slots.slice(i, i + reps).forEach(w => { chunkOf[w] = i / reps; });
+  }
+
+  const errors = [], warnings = [], notes = [];
+  const add = (list, title, wells, detail) =>
+    list.push({ title, wells: wells || [], detail: detail || '' });
+
+  const wellsOf = {};                       // tiu -> [{plate, well}]
+  const badKeys = [], inLocked = [], ctrlOutside = [], sampleInArea = [];
+  let assigned = 0;
+
+  for (let p = 1; p <= totalPlates; p++) {
+    const res = reservedOn(p), unlocked = !!areaUnlocked[p];
+    Object.entries(plateAssignments[p] || {}).forEach(([well, a]) => {
+      assigned++;
+      if (!/^[A-H](?:[1-9]|1[0-2])$/.test(well)) { badKeys.push(`P${p} ${well}`); return; }
+      (wellsOf[a.tiu_id] = wellsOf[a.tiu_id] || []).push({ plate: p, well });
+      const src = byTiu[a.tiu_id];
+      if (res.has(well)) {
+        // An unlocked area is a deliberate choice; a locked one is not.
+        if (!unlocked) inLocked.push(`P${p} ${well}`);
+        else if (!isAnyControl(src)) sampleInArea.push(`P${p} ${well} ${a.input_id}`);
+      } else if (isAnyControl(src)) {
+        ctrlOutside.push(`P${p} ${well} ${a.input_id}`);
+      }
+    });
+  }
+
+  if (badKeys.length)
+    add(errors, 'Well references that are not a real 96-well position', badKeys);
+  if (inLocked.length)
+    add(errors, 'Wells assigned inside a locked control area', inLocked,
+      'Unlock the control area on those plates if this is deliberate, or move the samples out.');
+  if (ctrlOutside.length)
+    add(warnings, 'Controls placed outside the control area', ctrlOutside,
+      'Fine if intended — worth a second look, since the control area is where the bench expects them.');
+  if (sampleInArea.length)
+    add(warnings, 'Ordinary samples sitting in an unlocked control area', sampleInArea);
+
+  // Replicate structure, per sample per plate
+  const wrongCount = [], notAdjacent = [], orphanPairs = [];
+  Object.entries(wellsOf).forEach(([tiu, list]) => {
+    const perPlate = {};
+    list.forEach(x => { (perPlate[x.plate] = perPlate[x.plate] || []).push(x.well); });
+    Object.entries(perPlate).forEach(([p, ws]) => {
+      if (ws.length !== reps) {
+        wrongCount.push(`P${p} ${tiu}: ${ws.length} well(s) (${ws.join(', ')}), expected ${reps}`);
+        if (ws.length === 1) orphanPairs.push(`P${p} ${ws[0]} ${tiu}`);
+      }
+      const chunks = new Set(ws.map(w => chunkOf[w]));
+      if (ws.length === reps && (chunks.size !== 1 || chunks.has(undefined))) {
+        notAdjacent.push(`P${p} ${tiu}: ${ws.join(', ')}`);
+      }
+    });
+  });
+  if (notAdjacent.length)
+    add(errors, `Replicates that are not adjacent under "${opts.layout}"`, notAdjacent,
+      'Downstream QC assumes neighbouring wells are technical duplicates of each other.');
+  if (wrongCount.length)
+    add(warnings, `Samples not present in exactly ${reps} well(s) on a plate`, wrongCount,
+      'Expected for a deliberate singlet; otherwise a replicate has been lost.');
+  if (orphanPairs.length)
+    add(warnings, 'Wells with no technical duplicate beside them', orphanPairs);
+
+  // A pair half-filled by two *different* samples is worse than an orphan: the
+  // export would call them replicates of each other.
+  const mixedPairs = [];
+  for (let p = 1; p <= totalPlates; p++) {
+    const byChunk = {};
+    Object.entries(plateAssignments[p] || {}).forEach(([well, a]) => {
+      const c = chunkOf[well];
+      if (c === undefined) return;
+      (byChunk[c] = byChunk[c] || []).push({ well, tiu: a.tiu_id });
+    });
+    Object.values(byChunk).forEach(entries => {
+      const distinct = new Set(entries.map(e => e.tiu));
+      if (distinct.size > 1)
+        mixedPairs.push(`P${p} ${entries.map(e => `${e.well}=${e.tiu}`).join(' + ')}`);
+    });
+  }
+  if (mixedPairs.length)
+    add(errors, 'Replicate pairs holding two different samples', mixedPairs,
+      'These would be exported as technical duplicates of each other.');
+
+  // Subject integrity, and bridges that drifted
+  if (opts.keepSubjectTogether) {
+    const platesBySubject = {};
+    Object.entries(wellsOf).forEach(([tiu, list]) => {
+      const src = byTiu[tiu];
+      if (!src || !src.subject_id) return;
+      if (manualBridge.has(tiu) || repeatSpec(src)) return;   // bridging is deliberate
+      const set = platesBySubject[src.subject_id] = platesBySubject[src.subject_id] || new Set();
+      list.forEach(x => set.add(x.plate));
+    });
+    const split = Object.entries(platesBySubject)
+      .filter(([, set]) => set.size > 1)
+      .map(([sub, set]) => `${sub}: plates ${[...set].sort((a, b) => a - b).join(', ')}`);
+    if (split.length)
+      add(warnings, 'Subjects split across more than one plate', split,
+        '"Keep subject together" was on for this design, so a batch effect could land inside a subject.');
+  }
+
+  const drifted = [];
+  Object.entries(wellsOf).forEach(([tiu, list]) => {
+    const perPlate = {};
+    list.forEach(x => { (perPlate[x.plate] = perPlate[x.plate] || []).push(x.well); });
+    const plates = Object.keys(perPlate);
+    if (plates.length < 2) return;
+    const sig = plates.map(p => perPlate[p].slice().sort().join('+'));
+    if (new Set(sig).size > 1)
+      drifted.push(`${tiu}: ${plates.map((p, i) => `P${p} ${sig[i]}`).join(', ')}`);
+  });
+  if (drifted.length)
+    add(notes, 'Bridging samples that sit in different wells on different plates', drifted,
+      'Autofill pins a bridge to the same wells on every plate; a hand edit has moved one.');
+
+  // Accounting: nothing quietly lost
+  const eligible = samples.filter(isAutofillable);
+  const placed = new Set(Object.keys(wellsOf));
+  const missing = eligible.filter(x => !placed.has(x.tiu_id));
+  if (missing.length)
+    add(notes, `${missing.length} eligible sample(s) not placed anywhere`,
+      missing.slice(0, 40).map(x => `${x.input_id} (${x.tiu_id})`),
+      missing.length > 40 ? `…and ${missing.length - 40} more.` : '');
+
+  return {
+    errors, warnings, notes, opts,
+    stats: {
+      assigned,
+      samplesPlaced: placed.size,
+      eligible: eligible.length,
+      plates: totalPlates
+    }
+  };
+}
+
+function openValidation() {
+  const r = validateLayout();
+  const nE = r.errors.length, nW = r.warnings.length, nN = r.notes.length;
+  const summary = document.getElementById('vaSummary');
+  const clean = !nE && !nW;
+  summary.innerHTML = clean
+    ? `<strong style="color:#2d7d46;">✓ No problems found.</strong> ` +
+      `${r.stats.assigned} well(s), ${r.stats.samplesPlaced} of ${r.stats.eligible} eligible ` +
+      `sample(s) placed across ${r.stats.plates} plate(s), checked as ` +
+      `${r.opts.replicates} replicate(s), ${escHtml(r.opts.layout)}.`
+    : `Checked ${r.stats.assigned} well(s) across ${r.stats.plates} plate(s) as ` +
+      `${r.opts.replicates} replicate(s), ${escHtml(r.opts.layout)} — ` +
+      `<strong>${nE} error(s), ${nW} warning(s)</strong>${nN ? `, ${nN} note(s)` : ''}.`;
+
+  const section = (items, label, colour) => items.map(f => `
+    <div style="border-left:3px solid ${colour};padding:6px 10px;margin:8px 0;background:#faf9f6;">
+      <div style="font-weight:600;">${label} · ${escHtml(f.title)} <span style="font-weight:400;color:var(--muted);">(${f.wells.length})</span></div>
+      ${f.detail ? `<div style="color:var(--muted);margin:2px 0 4px;">${escHtml(f.detail)}</div>` : ''}
+      <div style="font-family:'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11px;line-height:1.7;">
+        ${f.wells.slice(0, 60).map(w => escHtml(String(w))).join('<br>')}
+        ${f.wells.length > 60 ? `<br>…and ${f.wells.length - 60} more` : ''}
+      </div>
+    </div>`).join('');
+
+  document.getElementById('vaBody').innerHTML =
+    section(r.errors, '✕ Error', '#b84040') +
+    section(r.warnings, '⚠ Warning', '#c4851c') +
+    section(r.notes, 'ℹ Note', '#3a6b8a') ||
+    `<div class="empty-state">Every check passed.</div>`;
+
+  document.getElementById('validateOverlay').classList.remove('hidden');
+}
+
+function closeValidation() {
+  document.getElementById('validateOverlay').classList.add('hidden');
+}
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
 function downloadExcel() {
