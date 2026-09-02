@@ -1213,10 +1213,17 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         <label for="wellOrder">Well placement within plate</label>
         <select id="wellOrder" onchange="autofillOptionChanged()">
           <option value="grouped">Ordered — groups in contiguous column blocks</option>
+          <option value="grouped-random">Ordered, blocks shuffled — same blocks, seeded order</option>
+          <option value="grouped-balanced">Ordered, edge-balanced — blocks chosen to even out edge wells</option>
           <option value="scatter">Scatter — randomise well pairs</option>
           <option value="sequential">Sequential — deal order, A1→H10</option>
         </select>
         <span class="hint" id="wellOrderHint"></span>
+        <div style="margin-top:6px;">
+          <label for="edgeMargin" style="font-size:10px;">Warn if a group's edge share is off by more than (pp)</label>
+          <input type="number" id="edgeMargin" min="0" step="1" value="10" style="width:80px;"
+                 oninput="autofillOptionChanged()">
+        </div>
       </div>
       <div class="dither-field">
         <label for="ditherSeed">Random seed</label>
@@ -3482,6 +3489,12 @@ function computeAutofillPlan(opts) {
 
       let carry = [];
       windows.forEach((win, wi) => {
+        // Reserve windows hold genuine overflow and carry no quota. Dealing
+        // into them anyway is how a six-well remainder ended up apportioned
+        // across plates 6, 7 and 8 — three plates a lab would have to run for
+        // it. Anything still in hand falls through to the packed sweep below,
+        // which fills the active plates first and only then reaches these.
+        if (wi >= activeWindows) return;
         const work = carry;
         carry = [];
         names.forEach(g => {
@@ -3499,13 +3512,22 @@ function computeAutofillPlan(opts) {
         });
       });
 
-      // Anything a window could not take, plus any rounding remainder
+      // Anything a window could not take, plus any rounding remainder.
+      //
+      // Packed, not apportioned. Spreading a six-well remainder across the room
+      // left in the whole run is technically the most even thing to do and the
+      // worst thing to hand a lab: it leaves two wells on plate 8 and a plate
+      // that has to be run for them. A leftover goes on the first plate with
+      // space for it, so tails stay compact.
       names.forEach(g => queues[g].forEach(u => carry.push(u)));
       if (carry.length) {
         const byGroup = {};
         carry.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
         names.forEach(g => {
-          if (byGroup[g]) dealRun(pool, byGroup[g]).forEach(u => unplaced.push(u));
+          (byGroup[g] || []).forEach(u => {
+            const p = pool.find(q => capacity[q] - used[q] >= u.samples.length);
+            if (p === undefined) unplaced.push(u); else placeUnit(p, u);
+          });
         });
       }
       planWindows.push(...windows);
@@ -3592,9 +3614,10 @@ function computeAutofillPlan(opts) {
   // This only decides the arrangement *within* each plate: groups become solid
   // runs down the column pairs, in manifest order inside each group, so the
   // bench can lay a plate out group by group instead of hunting tube by tube.
-  if (opts.wellOrder === 'grouped') {
-    const rank = {};
-    groupNames.forEach((g, i) => { rank[g] = i; });
+  if (opts.wellOrder === 'grouped' || opts.wellOrder === 'grouped-random' ||
+      opts.wellOrder === 'grouped-balanced') {
+    const baseRank = {};
+    groupNames.forEach((g, i) => { baseRank[g] = i; });
     // Sample type is the outer key: different types need different bench prep,
     // so a plate must never interleave them. Within a type the groups stay in
     // their own contiguous runs, so a type-uniform cohort looks exactly as it
@@ -3609,14 +3632,76 @@ function computeAutofillPlan(opts) {
       const t = (u.samples[0] && u.samples[0].sample_type) || '';
       return t in typeRank ? typeRank[t] : 999;
     };
+    const sortBy = (list, rank) => list.sort((a, b) =>
+      ((a.pinned ? 0 : 1) - (b.pinned ? 0 : 1)) ||
+      (typeOf(a) - typeOf(b)) ||
+      (rank[a.group] - rank[b.group]) ||
+      (a.order - b.order) ||
+      String(a.label).localeCompare(String(b.label))
+    );
+
+    // What a candidate block order would cost in edge exposure on this plate.
+    // Walks the chunks exactly as the assignment below does, so the numbers are
+    // the ones that will actually be on the plate, not an approximation.
+    const scoreOrder = (p, rank) => {
+      const units = sortBy(plateUnits[p].slice(), rank);
+      const taken = new Set();
+      units.forEach(u => { if (u.fixedChunk != null) taken.add(u.fixedChunk); });
+      const per = {};
+      let ci = 0, wells = 0, edge = 0;
+      units.forEach(u => {
+        if (u.fixedChunk != null) return;          // bridges are pinned, not blocks
+        u.samples.forEach(() => {
+          while (taken.has(ci)) ci++;
+          const chunk = chunksByPlate[p][ci];
+          if (!chunk) return;
+          taken.add(ci);
+          const e = per[u.group] = per[u.group] || { wells: 0, edge: 0 };
+          chunk.forEach(w => {
+            e.wells++; wells++;
+            if (isEdgeWell(w)) { e.edge++; edge++; }
+          });
+        });
+      });
+      const mean = wells ? edge / wells : 0;
+      let worst = 0;
+      Object.values(per).forEach(e => {
+        if (e.wells) worst = Math.max(worst, Math.abs(e.edge / e.wells - mean));
+      });
+      return worst;
+    };
+
     platePool.forEach(p => {
-      plateUnits[p].sort((a, b) =>
-        ((a.pinned ? 0 : 1) - (b.pinned ? 0 : 1)) ||
-        (typeOf(a) - typeOf(b)) ||
-        (rank[a.group] - rank[b.group]) ||
-        (a.order - b.order) ||
-        String(a.label).localeCompare(String(b.label))
-      );
+      let rank = baseRank;
+      if (opts.wellOrder !== 'grouped') {
+        // Seeded per plate, so which block a group gets varies down the run
+        // while staying reproducible from the seed.
+        const shuffled = groupNames.slice();
+        shuffleInPlace(shuffled, makeRng(hashSeed(`${opts.seed}|blocks|${p}`)));
+        rank = {};
+        shuffled.forEach((g, i) => { rank[g] = i; });
+
+        if (opts.wellOrder === 'grouped-balanced') {
+          // No closed form here — the block a group gets depends on every
+          // group before it. Seeded restarts search the orderings cheaply and
+          // deterministically; the base order is included so balancing can
+          // never do worse than not balancing.
+          let best = rank, bestScore = scoreOrder(p, rank);
+          const baseScore = scoreOrder(p, baseRank);
+          if (baseScore < bestScore) { best = baseRank; bestScore = baseScore; }
+          const rng = makeRng(hashSeed(`${opts.seed}|edge|${p}`));
+          for (let k = 0; k < 60 && bestScore > 0; k++) {
+            const cand = groupNames.slice();
+            shuffleInPlace(cand, rng);
+            const r = {};
+            cand.forEach((g, i) => { r[g] = i; });
+            const sc = scoreOrder(p, r);
+            if (sc < bestScore) { best = r; bestScore = sc; }
+          }
+          rank = best;
+        }
+      }
+      sortBy(plateUnits[p], rank);
     });
   }
 
@@ -3698,6 +3783,8 @@ const SAMPLE_ORDER_HINTS = {
 
 const WELL_ORDER_HINTS = {
   grouped: 'Each group fills consecutive column pairs — easiest to pipette by hand.',
+  'grouped-random': 'Still contiguous blocks, but which block a group gets varies per plate, so cohort is not confounded with column position.',
+  'grouped-balanced': 'Contiguous blocks, ordered so every group takes a similar share of the edge wells (row A/H, col 1/12).',
   scatter: 'Randomises position too. Best once a robot is doing the pipetting.',
   sequential: 'Wells filled in deal order, so groups stay interleaved down the plate.'
 };
@@ -3725,6 +3812,74 @@ function onLayoutModeChange() {
 function addPlatesAndReplan(n) {
   addPlates(n);
   previewAutofill();
+}
+
+// Shown for every layout, not only the balanced one: knowing a cohort took
+// twice its share of the edge is worth having even when nothing was done to
+// prevent it.
+function edgeTableHtml(res, opts) {
+  const merged = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    merged[p] = Object.assign({}, plateAssignments[p] || {}, (res.plan || {})[p] || {});
+  }
+  const e = edgeExposure(merged, opts.groupField);
+  if (!e.rows.length) return '';
+  const margin = edgeMargin();
+  const over = e.rows.filter(r => Math.abs(r.dev) > margin);
+  const pct = x => (x * 100).toFixed(1) + '%';
+  const pp = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1);
+  return `<div class="pv-fill">
+    <div class="pv-fill-h">Edge exposure — share of each group's wells in row A/H or column 1/12` +
+    ` (run-wide ${pct(e.mean)})</div>
+    <table class="balance-table" style="width:auto;min-width:340px;">
+      <tr><th class="g">Group</th><th>Wells</th><th>On edge</th><th>Share</th><th>vs run</th></tr>
+      ${e.rows.map(r => `<tr>
+        <td class="g">${escHtml(r.group)}</td>
+        <td>${r.wells}</td><td>${r.edge}</td><td>${pct(r.frac)}</td>
+        <td${Math.abs(r.dev) > margin ? ' style="color:#b84040;font-weight:600;"' : ''}>${pp(r.dev)} pp</td>
+      </tr>`).join('')}
+    </table>
+    ${over.length
+      ? `<div style="color:#b84040;margin-top:4px;">⚠ ${over.map(r => escHtml(r.group)).join(', ')} ` +
+        `deviate(s) by more than ${(margin * 100).toFixed(0)} pp. ` +
+        `“Ordered, edge-balanced” chooses the block order to even this out.</div>`
+      : ''}
+  </div>`;
+}
+
+// Compact in the preview, full in the Design Log: someone deciding whether to
+// re-seed wants one line per covariate, not eight plate-by-level tables.
+function balanceTableHtml(res, opts) {
+  const merged = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    merged[p] = Object.assign({}, plateAssignments[p] || {}, (res.plan || {})[p] || {});
+  }
+  const diags = balanceDiagnostics(merged);
+  if (!diags.length) return '';
+  const margin = edgeMargin();
+  const pp = x => (x >= 0 ? '+' : '') + (x * 100).toFixed(1);
+  const stratified = opts.groupField;
+  return `<div class="pv-fill">
+    <div class="pv-fill-h">Balance across plates — every covariate, not just the one stratified on</div>
+    <table class="balance-table" style="width:auto;min-width:420px;">
+      <tr><th class="g">Covariate</th><th>Levels</th><th>Worst plate</th><th>Off by</th><th>Spread (χ², df)</th></tr>
+      ${diags.map(d => {
+        const over = Math.abs(d.maxDev) > margin;
+        return `<tr>
+          <td class="g">${escHtml(d.label)}${d.key === stratified ? ' <span style="color:var(--muted);">(stratified)</span>' : ''}</td>
+          <td>${d.levels.length}</td>
+          <td>${d.worst ? `P${d.worst.plate} · ${escHtml(String(d.worst.level))}` : '—'}</td>
+          <td${over ? ' style="color:#b84040;font-weight:600;"' : ''}>${pp(d.maxDev)} pp</td>
+          <td>${d.chi2.toFixed(1)}, df ${d.df}</td>
+        </tr>`;
+      }).join('')}
+    </table>
+    <div style="color:var(--muted);margin-top:4px;">
+      “Off by” is the largest gap between a plate's share of a level and the run's.
+      χ² is a descriptive measure of spread across plate × level, not a hypothesis test —
+      the plates are a design, not a random sample.
+    </div>
+  </div>`;
 }
 
 function autofillOptionChanged() {
@@ -3773,7 +3928,10 @@ function previewAutofill() {
   const head = [];
   head.push(`<strong>${res.sampleCount}</strong> sample(s) in <strong>${res.unitCount}</strong> unit(s) → <strong>${res.platesUsed.length}</strong> plate(s)`);
   head.push(`Mode: <strong>${opts.mode === 'dither' ? `dither across ${res.effectiveWindow} plate(s)` : 'block fill'}</strong> · Group by: <strong>${escHtml(groupLabel)}</strong>`);
-  const wellOrderLabel = { grouped: 'grouped in column blocks', scatter: 'scattered', sequential: 'sequential' }[opts.wellOrder] || opts.wellOrder;
+  const wellOrderLabel = { grouped: 'grouped in column blocks',
+                           'grouped-random': 'grouped, blocks shuffled per plate',
+                           'grouped-balanced': 'grouped, edge-balanced',
+                           scatter: 'scattered', sequential: 'sequential' }[opts.wellOrder] || opts.wellOrder;
   const layoutName = { 'pair-down': 'side-by-side, down', 'pair-across': 'side-by-side, across',
                        'stack-down': 'stacked, down' }[opts.layout] || opts.layout;
   head.push(`${wellsPer === 2 ? 'Duplicates: ' + layoutName : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Samples: <strong>${opts.sampleOrder === 'random' ? 'randomised' : 'manifest order'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
@@ -3898,7 +4056,7 @@ function previewAutofill() {
 
   box.innerHTML =
     `<div class="pv-head">${head.join('<br>')}</div>` +
-    table + fillOrder +
+    table + fillOrder + edgeTableHtml(res, opts) + balanceTableHtml(res, opts) +
     `<div class="pv-notes">${notes.join('<br>')}</div>`;
 
   document.getElementById('applyAutofillBtn').disabled = false;
@@ -4296,6 +4454,184 @@ document.addEventListener('mousemove', e => {
     t.style.top = (e.clientY + 12) + 'px';
   }
 });
+
+// ─── Balance diagnostics ─────────────────────────────────────────────────────
+// Stratification is single-factor: you balance on cohort or sex or diagnosis,
+// never all three. Everything you did not stratify on is left to chance, and
+// chance sometimes does badly — a run balanced on cohort can still put most of
+// the men on plates 1-3. There is no optimiser here, but you should at least be
+// able to see what drifted.
+//
+// Reported descriptively on purpose. A chi-square over plate x level is not a
+// hypothesis test of anything meaningful here (the design is not a random
+// sample, the cells are not independent draws), so it is labelled as a spread
+// statistic and never rendered as a p-value or a pass/fail.
+function quartileBucketer(values) {
+  const nums = values.filter(v => Number.isFinite(v)).sort((a, b) => a - b);
+  if (nums.length < 4) return null;
+  const at = q => nums[Math.min(nums.length - 1, Math.floor(q * nums.length))];
+  const q1 = at(0.25), q2 = at(0.5), q3 = at(0.75);
+  return v => {
+    if (!Number.isFinite(v)) return '(unknown)';
+    if (v <= q1) return `Q1 ≤${+q1.toFixed(1)}`;
+    if (v <= q2) return `Q2 ≤${+q2.toFixed(1)}`;
+    if (v <= q3) return `Q3 ≤${+q3.toFixed(1)}`;
+    return `Q4 >${+q3.toFixed(1)}`;
+  };
+}
+
+// The covariates worth watching, built from whatever the manifest actually
+// carries — a field nobody filled in is not reported as perfectly balanced.
+function balanceCovariates() {
+  const pool = samples.filter(s => !isAnyControl(s));
+  const has = f => pool.some(s => String(s[f] || '').trim());
+  const out = [];
+  const plain = (field, label) => {
+    if (has(field)) out.push({ key: field, label, of: s => groupKeyOf(s, field) });
+  };
+  plain('cohort', 'Cohort');
+  plain('diagnosis', 'Diagnosis');
+  plain('sample_type', 'Sample type');
+  plain('subject_sex', 'Sex');
+  plain('dither_group', 'dither_group');
+
+  const ageBucket = quartileBucketer(pool.map(s => parseFloat(s.subject_age_yrs)));
+  if (ageBucket && has('subject_age_yrs')) {
+    out.push({ key: 'age', label: 'Age quartile', of: s => ageBucket(parseFloat(s.subject_age_yrs)) });
+  }
+  if (has('num_freeze_thaws')) {
+    out.push({ key: 'freeze_thaws', label: 'Freeze–thaws', of: s => {
+      const n = parseFloat(s.num_freeze_thaws);
+      if (!Number.isFinite(n)) return '(unknown)';
+      return n <= 1 ? '0–1' : (n <= 3 ? '2–3' : '4+');
+    } });
+  }
+  const dates = pool.map(s => Date.parse(s.collection_date)).filter(Number.isFinite);
+  const dateBucket = quartileBucketer(dates);
+  if (dateBucket && dates.length >= 4) {
+    out.push({ key: 'collection_date', label: 'Collection date quartile', of: s => {
+      const t = Date.parse(s.collection_date);
+      if (!Number.isFinite(t)) return '(unknown)';
+      const b = dateBucket(t);
+      // relabel the numeric cut points as dates, which is what anyone reading wants
+      return b.replace(/(≤|>)(-?[\d.]+)/, (_, op, ms) =>
+        op + new Date(Number(ms)).toISOString().slice(0, 10));
+    } });
+  }
+  return out;
+}
+
+// Observed vs expected per plate for one covariate. Expected is the plate's
+// well count times the level's share of the whole run, which is what "balanced"
+// means here — every plate a scale model of the run.
+function balanceForCovariate(cov, src, plates) {
+  const levels = [];
+  const obs = {};            // plate -> level -> count
+  const totalByLevel = {};
+  const totalByPlate = {};
+  let grand = 0;
+  plates.forEach(p => {
+    obs[p] = {}; totalByPlate[p] = 0;
+    Object.values(src[p] || {}).forEach(a => {
+      const smp = byTiu[a.tiu_id];
+      if (!smp || isAnyControl(smp)) return;
+      const lv = cov.of(smp);
+      if (!levels.includes(lv)) levels.push(lv);
+      obs[p][lv] = (obs[p][lv] || 0) + 1;
+      totalByLevel[lv] = (totalByLevel[lv] || 0) + 1;
+      totalByPlate[p]++; grand++;
+    });
+  });
+  if (!grand) return null;
+  levels.sort();
+
+  let chi2 = 0, maxDev = 0, worst = null;
+  const cells = [];
+  plates.forEach(p => {
+    if (!totalByPlate[p]) return;
+    // A plate holding a four-well remainder is 100% of whatever landed on it,
+    // and would dominate "worst deviation" every time while telling you
+    // nothing. Such plates still appear in the tables; they just do not set the
+    // headline number.
+    const meaningful = totalByPlate[p] >= MIN_PLATE_FOR_BALANCE;
+    levels.forEach(lv => {
+      const o = obs[p][lv] || 0;
+      const e = totalByPlate[p] * (totalByLevel[lv] / grand);
+      if (e > 0) chi2 += ((o - e) * (o - e)) / e;
+      const devPP = (o / totalByPlate[p]) - (totalByLevel[lv] / grand);
+      if (meaningful && Math.abs(devPP) > Math.abs(maxDev)) {
+        maxDev = devPP; worst = { plate: p, level: lv, o, e };
+      }
+      cells.push({ plate: p, level: lv, observed: o, expected: e });
+    });
+  });
+  const usedPlates = plates.filter(p => totalByPlate[p] > 0).length;
+  return {
+    key: cov.key, label: cov.label, levels, cells, chi2,
+    df: Math.max(0, (levels.length - 1) * (usedPlates - 1)),
+    maxDev, worst, totalByPlate, totalByLevel, grand, plates: plates.filter(p => totalByPlate[p] > 0)
+  };
+}
+
+function balanceDiagnostics(assignmentsByPlate, plates) {
+  const src = assignmentsByPlate || plateAssignments;
+  const list = plates || Array.from({ length: totalPlates }, (_, i) => i + 1);
+  return balanceCovariates()
+    .map(c => balanceForCovariate(c, src, list))
+    .filter(Boolean)
+    .filter(r => r.levels.length > 1);      // one level is not a balance question
+}
+
+// ─── Edge exposure ───────────────────────────────────────────────────────────
+// Column position is not neutral in PhIP-Seq: evaporation, bead retention and
+// thermal gradients all vary across a plate, and the outer ring is the worst of
+// it. Laying each cohort into its own contiguous block balances cohort across
+// plates but confounds it perfectly with position — cohort A is always in
+// columns 1-2, so a column effect and a cohort effect are the same number.
+//
+// Edge exposure is the share of a group's wells sitting in row A or H or column
+// 1 or 12. It cannot be driven to zero — someone has to take the edge — so the
+// goal is that every group takes a similar share of it.
+function isEdgeWell(well) {
+  const row = well[0], col = parseInt(well.slice(1), 10);
+  return row === 'A' || row === 'H' || col === 1 || col === 12;
+}
+
+const EDGE_MARGIN_DEFAULT = 0.10;
+
+// One column's worth. Below this a plate is a remainder, not a sample of the run.
+const MIN_PLATE_FOR_BALANCE = 8;
+
+function edgeMargin() {
+  const el = document.getElementById('edgeMargin');
+  const n = el ? parseFloat(el.value) : NaN;
+  return Number.isFinite(n) && n >= 0 ? n / 100 : EDGE_MARGIN_DEFAULT;
+}
+
+// Per group: wells, how many are on the edge, and how far that share sits from
+// the run-wide share. Reads a plan or the live assignments, so it is equally
+// true before and after hand edits.
+function edgeExposure(assignmentsByPlate, groupField, plates) {
+  const src = assignmentsByPlate || plateAssignments;
+  const list = plates || Array.from({ length: totalPlates }, (_, i) => i + 1);
+  const byGroup = {};
+  let total = 0, totalEdge = 0;
+  list.forEach(p => Object.entries(src[p] || {}).forEach(([well, a]) => {
+    const smp = byTiu[a.tiu_id];
+    if (!smp || isAnyControl(smp)) return;         // controls sit where the area is
+    const g = groupKeyOf(smp, groupField || 'cohort');
+    const e = byGroup[g] = byGroup[g] || { wells: 0, edge: 0 };
+    e.wells++; total++;
+    if (isEdgeWell(well)) { e.edge++; totalEdge++; }
+  }));
+  const mean = total ? totalEdge / total : 0;
+  const rows = Object.entries(byGroup).map(([group, e]) => ({
+    group, wells: e.wells, edge: e.edge,
+    frac: e.wells ? e.edge / e.wells : 0,
+    dev: (e.wells ? e.edge / e.wells : 0) - mean
+  })).sort((a, b) => b.wells - a.wells);
+  return { rows, mean, total, totalEdge };
+}
 
 // ─── Bridge coverage ─────────────────────────────────────────────────────────
 // A bridge is any sample that appears on more than one plate: an anchor serum
@@ -5294,6 +5630,56 @@ function controlTemplateRows() {
 
 // Where each bridge physically sits, per plate — the thing an analyst needs to
 // know to use them as anchors, and the thing rotation deliberately varies.
+// Position is a covariate whether or not it was balanced, so the log records
+// where each group actually ended up.
+// The full observed-vs-expected tables. Written for a methods section: the
+// numbers are here, the interpretation is left to whoever is writing it.
+function balanceDiagnosticRows(stratifiedOn) {
+  const diags = balanceDiagnostics();
+  if (!diags.length) return [];
+  const margin = edgeMargin();
+  const rows = [[], ['Balance across plates'],
+    ['Every covariate the manifest carries, not only the one stratified on ' +
+     `(${stratifiedOn || 'none'}). χ² is descriptive spread over plate × level, not a hypothesis test.`],
+    [],
+    ['Covariate', 'Levels', 'Worst plate', 'Worst level', 'Deviation (pp)', 'Beyond margin?', 'Chi-square', 'df']];
+  diags.forEach(d => rows.push([
+    d.label + (d.key === stratifiedOn ? ' (stratified)' : ''),
+    d.levels.length,
+    d.worst ? d.worst.plate : '', d.worst ? d.worst.level : '',
+    +(d.maxDev * 100).toFixed(1),
+    Math.abs(d.maxDev) > margin ? 'YES' : 'no',
+    +d.chi2.toFixed(2), d.df
+  ]));
+  diags.forEach(d => {
+    rows.push([]);
+    rows.push([`${d.label} — observed (expected) per plate`]);
+    rows.push(['Level'].concat(d.plates.map(p => `Plate ${p}`)).concat(['Total']));
+    d.levels.forEach(lv => {
+      rows.push([lv].concat(d.plates.map(p => {
+        const c = d.cells.find(x => x.plate === p && x.level === lv) || { observed: 0, expected: 0 };
+        return `${c.observed} (${c.expected.toFixed(1)})`;
+      })).concat([d.totalByLevel[lv] || 0]));
+    });
+    rows.push(['Total'].concat(d.plates.map(p => d.totalByPlate[p])).concat([d.grand]));
+  });
+  return rows;
+}
+
+function edgeExposureRows(groupField) {
+  const e = edgeExposure(null, groupField);
+  if (!e.rows.length) return [];
+  const margin = edgeMargin();
+  const rows = [[], ['Edge exposure (row A/H, column 1/12)'],
+    ['Run-wide share', +(e.mean * 100).toFixed(1) + '%'],
+    ['Warn margin (percentage points)', +(margin * 100).toFixed(0)],
+    ['Group', 'Wells', 'On edge', 'Share %', 'Deviation (pp)', 'Beyond margin?']];
+  e.rows.forEach(r => rows.push([r.group, r.wells, r.edge,
+    +(r.frac * 100).toFixed(1), +(r.dev * 100).toFixed(1),
+    Math.abs(r.dev) > margin ? 'YES' : 'no']));
+  return rows;
+}
+
 function bridgeCoverageRows() {
   const cov = bridgeCoverage();
   const used = Object.keys(cov.perPlate).filter(p => cov.perPlate[p].length);
@@ -5372,6 +5758,8 @@ function buildDesignLogSheet() {
   rows.push(['Sample order within group', o.sampleOrder === 'random' ? 'Randomised (seeded)' : 'Manifest order (consecutive runs)']);
   rows.push(['Well placement', { grouped: 'Ordered — groups in contiguous column blocks',
                                  scatter: 'Scattered (seeded)',
+                                 'grouped-random': 'Ordered — blocks shuffled per plate (seeded)',
+                                 'grouped-balanced': 'Ordered — blocks chosen to balance edge exposure',
                                  sequential: 'Sequential (deal order)' }[o.wellOrder] || o.wellOrder]);
   rows.push(['Random seed', String(o.seed)]);
   rows.push(['Subjects kept whole', o.keepSubjectTogether
@@ -5439,6 +5827,8 @@ function buildDesignLogSheet() {
   }
   controlTemplateRows().forEach(r => rows.push(r));
   bridgeCoverageRows().forEach(r => rows.push(r));
+  edgeExposureRows(o.groupField).forEach(r => rows.push(r));
+  balanceDiagnosticRows(o.groupField).forEach(r => rows.push(r));
   if (m.unplaced.length) {
     rows.push([]);
     rows.push(['Unplaced — not enough plate capacity']);
