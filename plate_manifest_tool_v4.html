@@ -1240,12 +1240,51 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           <span>Never mix sample types on a plate — give each type its own plates (IgG normalisation differs between serum and CSF)</span>
         </label>
       </div>
+      <div class="dither-field" style="grid-column:1 / -1;">
+        <label>Volume check <span class="hint" style="display:inline;font-weight:400;">— values are this lab's; edit them for yours</span></label>
+        <label class="toggle-wrap">
+          <input type="checkbox" id="volumeCheckOn" checked onchange="autofillOptionChanged()">
+          <span>Flag samples without enough volume before they reach the bench</span>
+        </label>
+        <div id="volumeRuleRows" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:8px;"></div>
+        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
+          <div>
+            <label for="deadVolume" style="font-size:10px;">Dead volume per sample (µL)</label>
+            <input type="number" id="deadVolume" min="0" step="1" value="0" style="width:110px;"
+                   oninput="onVolumeSettingChanged()">
+          </div>
+          <div>
+            <label for="freezeThawMax" style="font-size:10px;">Warn above N freeze–thaws</label>
+            <input type="number" id="freezeThawMax" min="0" step="1" placeholder="no check" style="width:110px;"
+                   oninput="onVolumeSettingChanged()">
+          </div>
+          <span class="hint" style="flex:1;min-width:220px;">Per-sample overrides come from an optional
+            <code>min_volume_required_mL</code> column and win over these rules.</span>
+        </div>
+      </div>
     </div>
     <div class="autofill-preview" id="autofillPreview"><span style="color:var(--muted)">Set the options above, then click “Preview” to calculate the layout…</span></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeAutofillModal()">Cancel</button>
       <button class="btn btn-ghost" onclick="previewAutofill()">Preview</button>
       <button class="btn btn-primary" id="applyAutofillBtn" onclick="applyAutofill()" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="autofill-modal-overlay hidden" id="volumeOverlay">
+  <div class="autofill-modal" style="max-width:860px;">
+    <h2>⚠ Volume pre-flight</h2>
+    <p id="volSummary" style="margin-bottom:4px;"></p>
+    <div style="display:flex;gap:8px;margin:8px 0;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:11px;color:var(--muted);">Apply to all:</span>
+      <button class="btn btn-ghost" style="padding:2px 10px;font-size:11px;" onclick="setAllVolumeChoices('proceed')">Proceed anyway</button>
+      <button class="btn btn-ghost" style="padding:2px 10px;font-size:11px;" onclick="setAllVolumeChoices('singlet')">Reduce to singlet</button>
+      <button class="btn btn-ghost" style="padding:2px 10px;font-size:11px;" onclick="setAllVolumeChoices('exclude')">Exclude</button>
+    </div>
+    <div id="volBody" style="max-height:48vh;overflow:auto;margin:6px 0;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="closeVolumeDialog()">Done</button>
     </div>
   </div>
 </div>
@@ -1349,6 +1388,8 @@ try {
 document.addEventListener('DOMContentLoaded', () => {
   const badge = document.getElementById('versionBadge');
   if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
+  loadVolumeSettings();
+  buildVolumeRuleRows();
 });
 
 // ─── Session autosave ────────────────────────────────────────────────────────
@@ -1578,6 +1619,9 @@ function resetDesigner() {
   restoredFrom = null;
   editingWell = null;
   instanceIds = {};
+  volumeResolution = {};
+  volumeFlagged = [];
+  volumePreflightShown = false;
   sourceBytes = null;
   manualBridge = new Set();
   plateReserved = {};
@@ -1627,6 +1671,9 @@ function processFile(file) {
     changeLog = [];
     restoredFrom = null;
     instanceIds = {};
+    volumeResolution = {};
+    volumeFlagged = [];
+    volumePreflightShown = false;
     manualBridge = new Set();
     plateAssignments = {};
     plateReserved = {};
@@ -1719,7 +1766,7 @@ function loadSamples() {
   const colIdx = {};
   const EXPECTED_COLS = [
     'tiu_id', 'input_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
-    'subject_ethnicity', 'sample_type', 'volume_ml', 'collection_date',
+    'subject_ethnicity', 'sample_type', 'volume_ml', 'min_volume_required_ml', 'collection_date',
     'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
     'dither_group',        // optional — an explicit stratification column
     'repeat_across_plates' // optional — bridging samples run on several plates
@@ -1794,6 +1841,7 @@ function loadSamples() {
       notes: getVal(row, 'notes'),
       dither_group: getVal(row, 'dither_group'),
       repeat_across_plates: getVal(row, 'repeat_across_plates'),
+      min_volume_required_mL: getVal(row, 'min_volume_required_ml'),
       rowIdx: i
     });
   }
@@ -3103,7 +3151,11 @@ function summarisePlan(m) {
     manualHeld: (m.manualHeld || []).map(x => x.input_id),
     bridging: (m.bridging || []).map(x => x.input_id),
     unplaced: (m.unplaced || []).reduce((a, u) => a + u.samples.length, 0),
-    typePartition: m.typePartition ? JSON.parse(JSON.stringify(m.typePartition)) : null
+    typePartition: m.typePartition ? JSON.parse(JSON.stringify(m.typePartition)) : null,
+    volumeExcluded: (m.volumeExcluded || []).slice(),
+    volumeSinglet: (m.volumeSinglet || []).slice(),
+    volumeFlagged: JSON.parse(JSON.stringify(volumeFlagged || [])),
+    volumeChoices: Object.assign({}, volumeResolution)
   };
 }
 
@@ -3157,8 +3209,16 @@ function computeAutofillPlan(opts) {
   // rather than letting it disappear into the generic skipped-types line.
   const bridgeIgnored = samples.filter(s => isRepeating(s) && !isAutofillable(s));
   const manualHeld = autofillable.filter(s => !isRepeating(s) && isManualBridge(s));
+  // A sample excluded at the volume pre-flight is not planned at all; one
+  // reduced to a singlet is planned normally but written into one well of its
+  // chunk, leaving the partner deliberately empty.
+  const volumeExcluded = new Set(Object.entries(volumeResolution)
+    .filter(([, choice]) => choice === 'exclude').map(([tiu]) => tiu));
+  const volumeSinglet = new Set(Object.entries(volumeResolution)
+    .filter(([, choice]) => choice === 'singlet').map(([tiu]) => tiu));
   const eligible = autofillable.filter(s =>
-    !isRepeating(s) && !isManualBridge(s) && !assignedTiuIds.has(s.tiu_id)
+    !isRepeating(s) && !isManualBridge(s) && !assignedTiuIds.has(s.tiu_id) &&
+    !volumeExcluded.has(s.tiu_id)
   );
   const skippedTypes = [...new Set(
     samples.filter(s => !isAutofillable(s) && !assignedTiuIds.has(s.tiu_id))
@@ -3505,7 +3565,8 @@ function computeAutofillPlan(opts) {
         const chunk = chunksByPlate[p][ci];
         if (!chunk) return;
         taken.add(ci);
-        chunk.forEach(k => { plan[p][k] = { input_id: s.input_id, tiu_id: s.tiu_id }; });
+        const wells = volumeSinglet.has(s.tiu_id) ? chunk.slice(0, 1) : chunk;
+        wells.forEach(k => { plan[p][k] = { input_id: s.input_id, tiu_id: s.tiu_id }; });
       });
     });
   });
@@ -3516,7 +3577,9 @@ function computeAutofillPlan(opts) {
     platesUsed, capacity, used, unplaced, skippedTypes,
     windows: planWindows, effectiveWindow: planWindow, typePartition,
     unitCount: units.length,
-    sampleCount: eligible.length
+    sampleCount: eligible.length,
+    volumeExcluded: [...volumeExcluded],
+    volumeSinglet: [...volumeSinglet]
   };
 }
 
@@ -3595,8 +3658,21 @@ function escHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+let volumePreflightShown = false;
+
 function previewAutofill() {
   const opts = readAutofillOptions();
+  // The pre-flight is shown once per set of rules, before the first preview
+  // that would be affected by it — not on every click.
+  if (!volumePreflightShown && volumeCheckEnabled()) {
+    const { short, thawed } = runVolumeCheck(opts.replicates);
+    if (short.length || thawed.length) {
+      volumePreflightShown = true;
+      openVolumeDialog(opts.replicates);
+      return;
+    }
+    volumePreflightShown = true;
+  }
   const res = computeAutofillPlan(opts);
   const box = document.getElementById('autofillPreview');
 
@@ -3697,6 +3773,15 @@ function previewAutofill() {
       `${e.need} plate(s) and has ${totalPlates}.</span> ` +
       `<button class="btn btn-primary" style="padding:2px 10px;font-size:11px;" ` +
       `onclick="addPlatesAndReplan(${short})">＋ Add ${short} plate(s) and re-run</button>`);
+  }
+  const volEx = (res.volumeExcluded || []).length, volSing = (res.volumeSinglet || []).length;
+  if (volEx || volSing) {
+    const parts = [];
+    if (volEx) parts.push(`${volEx} excluded`);
+    if (volSing) parts.push(`${volSing} reduced to a singlet`);
+    notes.push(`<span class="warn">⚠ Volume pre-flight: ${parts.join(', ')}.</span> ` +
+      `<button class="btn btn-ghost" style="padding:2px 10px;font-size:11px;" ` +
+      `onclick="openVolumeDialog(${opts.replicates})">Review</button>`);
   }
   if (opts.mode === 'dither' && opts.windowSize > res.effectiveWindow) {
     notes.push(`ℹ Dither window reduced to ${res.effectiveWindow} — the run only needs ${res.effectiveWindow} plate(s) at this sample count.`);
@@ -4123,6 +4208,211 @@ document.addEventListener('mousemove', e => {
     t.style.top = (e.clientY + 12) + 'px';
   }
 });
+
+// ─── Volume pre-flight ───────────────────────────────────────────────────────
+// volume_mL was parsed and never used, so a tube with too little in it was only
+// discovered at the bench, after the layout had been printed and the plates
+// laid out. Checking it at design time is cheap; discovering it at the bench
+// costs a run.
+//
+// The two matrices fail differently, so one formula does not fit both:
+//   CSF is draw-limited — it goes on neat, so every well costs real volume and
+//     the requirement scales with replicates (and with the two rounds of
+//     PhIP-Seq, which is why the per-well figure is 20 µL, not 10).
+//   Serum and plasma are dilution-limited — a small neat volume is diluted to
+//     working strength, so the neat draw a sample must have is a flat floor
+//     that does not scale with the number of wells.
+// These are this lab's numbers, shown in the UI and editable there; a lab with
+// a different protocol changes them without touching the code.
+const DEFAULT_VOLUME_RULES = {
+  CSF:    { mode: 'per-well', uL: 20, note: '10 µL per well × 2 rounds' },
+  serum:  { mode: 'flat',     uL: 5,  note: 'diluted — neat floor, does not scale with wells' },
+  plasma: { mode: 'flat',     uL: 5,  note: 'diluted — neat floor, does not scale with wells' }
+};
+let volumeRules = JSON.parse(JSON.stringify(DEFAULT_VOLUME_RULES));
+let deadVolumeUL = 0;
+let freezeThawMax = null;                 // null = no freeze-thaw check
+let volumeResolution = {};                // tiu_id -> 'proceed' | 'singlet' | 'exclude'
+let volumeFlagged = [];                   // last pre-flight result, for the Design Log
+
+function volumeCheckEnabled() {
+  const el = document.getElementById('volumeCheckOn');
+  return !el || el.checked;
+}
+
+// µL a sample must have to be worth placing, and where that number came from
+function volumeRequirement(sample, replicates) {
+  const override = parseFloat(sample.min_volume_required_mL);
+  if (Number.isFinite(override) && override > 0) {
+    return { uL: override * 1000, source: 'min_volume_required_mL column' };
+  }
+  const rule = volumeRules[sample.sample_type];
+  if (!rule || !Number.isFinite(rule.uL) || rule.uL <= 0) return null;   // no rule = no check
+  const base = rule.mode === 'per-well' ? rule.uL * replicates : rule.uL;
+  return {
+    uL: base + (Number.isFinite(deadVolumeUL) ? deadVolumeUL : 0),
+    source: rule.mode === 'per-well'
+      ? `${rule.uL} µL/well × ${replicates} well(s)` + (deadVolumeUL ? ` + ${deadVolumeUL} µL dead` : '')
+      : `${rule.uL} µL flat` + (deadVolumeUL ? ` + ${deadVolumeUL} µL dead` : '')
+  };
+}
+
+// Returns the samples that cannot support the requested replicates, and
+// separately those that have been thawed more often than the lab allows.
+function runVolumeCheck(replicates) {
+  const short = [], thawed = [];
+  if (!volumeCheckEnabled()) return { short, thawed };
+  samples.filter(isAutofillable).forEach(s => {
+    const need = volumeRequirement(s, replicates);
+    const have = parseFloat(s.volume_mL);
+    if (need && Number.isFinite(have)) {
+      const haveUL = have * 1000;
+      if (haveUL < need.uL) {
+        // Would one well do? Only meaningful where the requirement scales.
+        const single = volumeRequirement(s, 1);
+        short.push({
+          tiu_id: s.tiu_id, input_id: s.input_id, sample_type: s.sample_type,
+          haveUL, needUL: need.uL, source: need.source,
+          singletWouldFit: !!single && haveUL >= single.uL
+        });
+      }
+    }
+    const ft = parseFloat(s.num_freeze_thaws);
+    if (Number.isFinite(freezeThawMax) && Number.isFinite(ft) && ft > freezeThawMax) {
+      thawed.push({ tiu_id: s.tiu_id, input_id: s.input_id, freeze_thaws: ft });
+    }
+  });
+  return { short, thawed };
+}
+
+function buildVolumeRuleRows() {
+  const box = document.getElementById('volumeRuleRows');
+  if (!box) return;
+  box.innerHTML = Object.entries(volumeRules).map(([type, r]) => `
+    <div style="border:1px solid var(--border);border-radius:6px;padding:6px 8px;">
+      <div style="font-weight:600;font-size:11px;">${escHtml(type)}</div>
+      <div style="display:flex;gap:6px;align-items:center;margin-top:4px;">
+        <input type="number" min="0" step="0.5" value="${r.uL}" style="width:70px;"
+               oninput="setVolumeRule('${escHtml(type)}','uL',this.value)">
+        <span style="font-size:10px;">µL</span>
+        <select style="flex:1;font-size:10px;" onchange="setVolumeRule('${escHtml(type)}','mode',this.value)">
+          <option value="per-well"${r.mode === 'per-well' ? ' selected' : ''}>per well (scales with replicates)</option>
+          <option value="flat"${r.mode === 'flat' ? ' selected' : ''}>flat (neat floor)</option>
+        </select>
+      </div>
+      ${r.note ? `<div style="font-size:9px;color:var(--muted);margin-top:3px;">${escHtml(r.note)}</div>` : ''}
+    </div>`).join('');
+}
+
+function setVolumeRule(type, field, value) {
+  if (!volumeRules[type]) return;
+  volumeRules[type][field] = field === 'uL' ? parseFloat(value) : value;
+  if (field === 'mode') volumeRules[type].note = '';   // the stock note no longer describes it
+  onVolumeSettingChanged();
+}
+
+function resetVolumePreflight() { volumePreflightShown = false; }
+
+function onVolumeSettingChanged() {
+  const num = id => {
+    const v = (document.getElementById(id) || {}).value;
+    const n = parseFloat(v);
+    return v === '' || !Number.isFinite(n) ? null : n;
+  };
+  deadVolumeUL = num('deadVolume') || 0;
+  freezeThawMax = num('freezeThawMax');
+  volumeResolution = {};        // the rules changed, so old decisions are stale
+  volumePreflightShown = false;
+  saveVolumeSettings();
+  autofillOptionChanged();
+}
+
+function saveVolumeSettings() {
+  try {
+    localStorage.setItem('phipseq_volume_rules', JSON.stringify({
+      rules: volumeRules, dead: deadVolumeUL, freezeThawMax
+    }));
+  } catch (e) { /* storage off — the defaults simply apply each session */ }
+}
+
+function loadVolumeSettings() {
+  try {
+    const raw = localStorage.getItem('phipseq_volume_rules');
+    if (!raw) return;
+    const v = JSON.parse(raw);
+    if (v && v.rules) volumeRules = Object.assign(JSON.parse(JSON.stringify(DEFAULT_VOLUME_RULES)), v.rules);
+    if (Number.isFinite(v && v.dead)) deadVolumeUL = v.dead;
+    freezeThawMax = Number.isFinite(v && v.freezeThawMax) ? v.freezeThawMax : null;
+    const dv = document.getElementById('deadVolume');
+    if (dv) dv.value = deadVolumeUL;
+    const ft = document.getElementById('freezeThawMax');
+    if (ft && freezeThawMax !== null) ft.value = freezeThawMax;
+  } catch (e) { /* unreadable settings are not worth failing over */ }
+}
+
+// The dialog: one row per flagged sample, three ways out of it.
+function openVolumeDialog(replicates) {
+  const { short, thawed } = runVolumeCheck(replicates);
+  volumeFlagged = short;
+  const fmt = n => (n >= 1000 ? (n / 1000).toFixed(2) + ' mL' : Math.round(n) + ' µL');
+  document.getElementById('volSummary').innerHTML = short.length
+    ? `<strong>${short.length} sample(s)</strong> do not have enough volume for ` +
+      `${replicates} well(s) each. Choose what happens to each — every choice is ` +
+      `recorded in the Design Log.`
+    : `No sample is short on volume at ${replicates} well(s) each.`;
+
+  document.getElementById('volBody').innerHTML = short.length ? `
+    <table class="balance-table" style="width:100%;">
+      <tr><th>Sample</th><th>Type</th><th>Has</th><th>Needs</th><th>Rule</th><th>What to do</th></tr>
+      ${short.map(f => `
+        <tr>
+          <td>${escHtml(f.input_id)}<div style="font-size:9px;color:var(--muted);">${escHtml(f.tiu_id)}</div></td>
+          <td>${escHtml(f.sample_type)}</td>
+          <td style="color:#b84040;font-weight:600;">${fmt(f.haveUL)}</td>
+          <td>${fmt(f.needUL)}</td>
+          <td style="font-size:10px;color:var(--muted);">${escHtml(f.source)}</td>
+          <td>
+            <select onchange="setVolumeChoice('${escHtml(f.tiu_id)}', this.value)" style="font-size:11px;">
+              <option value="exclude"${(volumeResolution[f.tiu_id] || 'exclude') === 'exclude' ? ' selected' : ''}>Exclude from the run</option>
+              <option value="singlet"${volumeResolution[f.tiu_id] === 'singlet' ? ' selected' : ''}${f.singletWouldFit ? '' : ' disabled'}>Reduce to singlet${f.singletWouldFit ? '' : ' (still short)'}</option>
+              <option value="proceed"${volumeResolution[f.tiu_id] === 'proceed' ? ' selected' : ''}>Proceed anyway</option>
+            </select>
+          </td>
+        </tr>`).join('')}
+    </table>` + (thawed.length ? volumeThawTable(thawed) : '')
+    : (thawed.length ? volumeThawTable(thawed)
+                     : '<div class="empty-state">Nothing to review.</div>');
+
+  // Default every unresolved sample to the safe choice rather than silently
+  // letting a short sample through
+  short.forEach(f => { if (!volumeResolution[f.tiu_id]) volumeResolution[f.tiu_id] = 'exclude'; });
+  document.getElementById('volumeOverlay').classList.remove('hidden');
+}
+
+function volumeThawTable(thawed) {
+  return `<div style="margin-top:12px;">
+    <div style="font-weight:600;font-size:11px;color:#8a6a00;">⚠ ${thawed.length} sample(s) above ${freezeThawMax} freeze–thaw(s)</div>
+    <div style="font-size:10px;color:var(--muted);margin:2px 0 4px;">Reported for information — these are still placed.</div>
+    <div style="font-family:'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;font-size:11px;line-height:1.6;">
+      ${thawed.slice(0, 40).map(t => `${escHtml(t.input_id)} — ${t.freeze_thaws}`).join('<br>')}
+      ${thawed.length > 40 ? `<br>…and ${thawed.length - 40} more` : ''}
+    </div></div>`;
+}
+
+function setVolumeChoice(tiu, choice) { volumeResolution[tiu] = choice; }
+
+function setAllVolumeChoices(choice) {
+  volumeFlagged.forEach(f => {
+    if (choice === 'singlet' && !f.singletWouldFit) return;   // would not help
+    volumeResolution[f.tiu_id] = choice;
+  });
+  openVolumeDialog(parseInt(document.getElementById('replicateCount').value, 10) || 2);
+}
+
+function closeVolumeDialog() {
+  document.getElementById('volumeOverlay').classList.add('hidden');
+  previewAutofill();
+}
 
 // ─── Layout validation ───────────────────────────────────────────────────────
 // The invariant tests check what the planner produces. They cannot check what a
@@ -4660,6 +4950,17 @@ function buildDesignLogSheet() {
     }
   }
 
+  if ((m.volumeExcluded && m.volumeExcluded.length) ||
+      (m.volumeSinglet && m.volumeSinglet.length) ||
+      (m.volumeFlagged && m.volumeFlagged.length)) {
+    rows.push([]);
+    rows.push(['Volume pre-flight']);
+    rows.push(['Sample', 'Type', 'Available (µL)', 'Required (µL)', 'Rule', 'Resolution']);
+    (m.volumeFlagged || []).forEach(f => {
+      rows.push([f.input_id, f.sample_type, Math.round(f.haveUL), Math.round(f.needUL),
+                 f.source, m.volumeChoices[f.tiu_id] || 'proceed']);
+    });
+  }
   if (m.unplaced.length) {
     rows.push([]);
     rows.push(['Unplaced — not enough plate capacity']);
@@ -4745,6 +5046,10 @@ function buildDesignState() {
     manual_bridge: [...manualBridge],
     applied_plan_meta: appliedPlanSummary,
     instance_ids: instanceIds,
+    volume_rules: volumeRules,
+    dead_volume_uL: deadVolumeUL,
+    freeze_thaw_max: freezeThawMax,
+    volume_resolution: volumeResolution,
     assignments,
     change_log: changeLog
   };
@@ -4795,6 +5100,11 @@ function applyDesignState(st) {
   (st.area_unlocked || []).forEach(p => { areaUnlocked[p] = true; });
   manualBridge = new Set(st.manual_bridge || []);
   instanceIds = Object.assign({}, st.instance_ids || {});
+  if (st.volume_rules) volumeRules = JSON.parse(JSON.stringify(st.volume_rules));
+  if (Number.isFinite(st.dead_volume_uL)) deadVolumeUL = st.dead_volume_uL;
+  freezeThawMax = Number.isFinite(st.freeze_thaw_max) ? st.freeze_thaw_max : null;
+  volumeResolution = Object.assign({}, st.volume_resolution || {});
+  buildVolumeRuleRows();
   appliedPlanSummary = st.applied_plan_meta || null;
   changeLog = (st.change_log || []).map(c => Object.assign({}, c, { prior: true }));
 
