@@ -3757,7 +3757,10 @@ function buildPlateSheet(field) {
             val = `${val} [${(sObj && sObj.sample_type) || 'unspecified'}]`;
           }
           data[dataRow][dataCol] = val;
-          styleTargets.push({ r: dataRow, c: dataCol, input_id: assignment.input_id });
+          // tiu_id as well as input_id: colours key on tiu_id since ticket 1.1,
+          // and a target carrying only input_id silently fell back to grey.
+          styleTargets.push({ r: dataRow, c: dataCol,
+                              input_id: assignment.input_id, tiu_id: assignment.tiu_id });
         } else {
           data[dataRow][dataCol] = data[dataRow][dataCol] || null;
           if (isReserved(p, key)) styleTargets.push({ r: dataRow, c: dataCol, reserved: true });
