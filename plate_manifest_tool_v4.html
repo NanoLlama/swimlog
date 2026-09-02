@@ -1668,6 +1668,7 @@ function restoreChangeLog() {
     if (!r || !r[0]) continue;
     changeLog.push({
       ts: g(r, 'timestamp'), user: g(r, 'user'), plate: g(r, 'plate'), well: g(r, 'well'),
+      count: g(r, 'wells_affected'),
       action: g(r, 'action'), from_lab: g(r, 'from_lab_id'), from_tiu: g(r, 'from_tiu_id'),
       to_lab: g(r, 'to_lab_id'), to_tiu: g(r, 'to_tiu_id'), note: g(r, 'note'), prior: true
     });
@@ -1933,7 +1934,11 @@ function setReservedFromSelection() {
   const assignments = plateAssignments[currentPlate] || {};
   const clash = [...selectedWells].filter(k => assignments[k]);
   if (clash.length && !confirm(`${clash.length} selected well(s) already hold samples. Reserve anyway? Existing assignments are kept.`)) return;
+  const before = describeReserved(currentPlate);
   plateReserved[currentPlate] = new Set(selectedWells);
+  mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
+                                   count: selectedWells.size,
+                                   note: `${before} → ${describeReserved(currentPlate)} (from selection)` });
   selectedWells.clear();
   renderPlate();
 }
@@ -1941,13 +1946,20 @@ function setReservedFromSelection() {
 function setReservedPreset(kind) {
   const set = new Set();
   if (kind === 'cols1112') DEFAULT_CONTROL_COLS.forEach(c => ROWS.forEach(r => set.add(`${r}${c}`)));
+  const before = describeReserved(currentPlate);
   plateReserved[currentPlate] = set; // 'none' leaves the set empty
+  mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
+                                   count: set.size, note: `${before} → ${describeReserved(currentPlate)}` });
   selectedWells.clear();
   renderPlate();
 }
 
 function clearReserved() {
+  const before = describeReserved(currentPlate);
   delete plateReserved[currentPlate];
+  mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
+                                   count: reservedOn(currentPlate).size,
+                                   note: `${before} → ${describeReserved(currentPlate)} (run default)` });
   renderPlate();
 }
 
@@ -1957,6 +1969,8 @@ function clearReserved() {
 function toggleAreaUnlock() {
   if (areaUnlocked[currentPlate]) delete areaUnlocked[currentPlate];
   else areaUnlocked[currentPlate] = true;
+  mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
+                                   note: areaUnlocked[currentPlate] ? 'unlocked' : 're-locked' });
   renderPlate();
 }
 
@@ -2013,8 +2027,16 @@ function isBridged(sample) { return isRepeating(sample) || isManualBridge(sample
 
 function toggleBridge(tiu_id, ev) {
   if (ev) ev.stopPropagation();
-  if (manualBridge.has(tiu_id)) manualBridge.delete(tiu_id);
-  else manualBridge.add(tiu_id);
+  const src = byTiu[tiu_id] || {};
+  if (manualBridge.has(tiu_id)) {
+    manualBridge.delete(tiu_id);
+    mutate('bridge_off', { plate: '(all)', well: '(sample)',
+                           from_lab: src.input_id, from_tiu: tiu_id });
+  } else {
+    manualBridge.add(tiu_id);
+    mutate('bridge_on', { plate: '(all)', well: '(sample)',
+                          to_lab: src.input_id, to_tiu: tiu_id });
+  }
   renderPlate();
   renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
   buildAssignSelect();
@@ -2285,13 +2307,19 @@ function assignSelected() {
   const sampleIsAssayCtrl = isAnyControl(sample);
   const sampleIsCtrl = isAnyControl(sample);
   let skippedLocked = 0;
+  const filled = [];
   selectedWells.forEach(key => {
     const locked = isReserved(currentPlate, key) && !areaUnlocked[currentPlate];
     if (locked && !sampleIsAssayCtrl) { skippedLocked++; return; }
     if (!plateAssignments[currentPlate][key]) {
       plateAssignments[currentPlate][key] = { input_id: sample.input_id, tiu_id: sample.tiu_id };
+      filled.push(key);
     }
   });
+  if (filled.length) {
+    mutate('assigned', { plate: currentPlate, well: filled.sort().join(', '),
+                         count: filled.length, to_lab: sample.input_id, to_tiu: sample.tiu_id });
+  }
   if (skippedLocked > 0) alert(`${skippedLocked} reserved well(s) were skipped — the control area takes control-type samples (assay control, control, mAb). Use "Unlock" on this plate to put anything there.`);
 
   selectedWells.clear();
@@ -2317,13 +2345,20 @@ function assignSelectedAllPlates() {
   for (let p = 1; p <= totalPlates; p++) {
     if (!plateAssignments[p]) plateAssignments[p] = {};
     let any = false;
+    const onThisPlate = [];
     wells.forEach(key => {
       if (plateAssignments[p][key]) { skipped++; return; }
       if (isReserved(p, key) && !isCtrl && !areaUnlocked[p]) { skipped++; return; }
       plateAssignments[p][key] = { input_id: sample.input_id, tiu_id: sample.tiu_id };
       placed++; any = true;
+      onThisPlate.push(key);
     });
-    if (any) touched.push(p);
+    if (any) {
+      touched.push(p);
+      mutate('assigned', { plate: p, well: onThisPlate.sort().join(', '),
+                           count: onThisPlate.length, to_lab: sample.input_id,
+                           to_tiu: sample.tiu_id, note: 'applied to all plates' });
+    }
   }
 
   selectedWells.clear();
@@ -2338,6 +2373,11 @@ function assignSelectedAllPlates() {
 
 function clearWell(key) {
   if (plateAssignments[currentPlate]) {
+    const prev = plateAssignments[currentPlate][key];
+    if (prev) {
+      mutate('cleared', { plate: currentPlate, well: key, count: 1,
+                          from_lab: prev.input_id, from_tiu: prev.tiu_id });
+    }
     delete plateAssignments[currentPlate][key];
   }
   renderPlate();
@@ -2348,6 +2388,8 @@ function clearWell(key) {
 
 function clearPlate() {
   if (confirm(`Clear all assignments on Plate ${currentPlate}?`)) {
+    const n = Object.keys(plateAssignments[currentPlate] || {}).length;
+    if (n) mutate('plate_cleared', { plate: currentPlate, well: '(whole plate)', count: n });
     plateAssignments[currentPlate] = {};
     selectedWells.clear();
     renderPlate();
@@ -3081,6 +3123,17 @@ function applyAutofill() {
       if (!plateAssignments[p][key]) plateAssignments[p][key] = val;
     });
   });
+  const platesTouched = Object.keys(autofillPlan).map(Number).sort((a, b) => a - b);
+  const wellsWritten = Object.values(autofillPlan)
+    .reduce((a, w) => a + Object.keys(w).length, 0);
+  const o = (lastPlanMeta && lastPlanMeta.opts) || {};
+  mutate('autofill_applied', {
+    plate: platesTouched.join(', '), well: `${platesTouched.length} plate(s)`,
+    count: wellsWritten,
+    note: `mode ${o.mode || '?'}, group by ${o.groupField || '?'}, window ` +
+          `${(lastPlanMeta && lastPlanMeta.effectiveWindow) || '?'}, seed ${o.seed || '?'}, ` +
+          `${o.replicates || '?'} replicate(s)`
+  });
   appliedPlanMeta = lastPlanMeta;
   closeAutofillModal();
   selectedWells.clear();
@@ -3258,7 +3311,20 @@ function onWellEditAction() {
   document.getElementById('weReplaceField').style.display = act === 'replace' ? '' : 'none';
 }
 
+// Ticket 1.3. The Change Log is presented as the design's audit trail, so
+// every state change has to reach it — not only well edits. Bulk operations
+// record one summarised row with a well count rather than N rows, which keeps
+// the log readable and matches how a bench would describe the action.
+//
+// Actions: assigned, cleared, plate_cleared, autofill_applied,
+//          bridge_on, bridge_off, control_area_changed, replaced, note
+function mutate(action, payload) {
+  logChange(Object.assign({ action }, payload));
+}
+
 function logChange(entry) {
+  ['plate', 'well', 'from_lab', 'from_tiu', 'to_lab', 'to_tiu', 'note']
+    .forEach(k => { if (entry[k] === undefined) entry[k] = ''; });
   changeLog.push(Object.assign({
     ts: new Date().toISOString().replace('T', ' ').slice(0, 19),
     user: currentUser() || '(unnamed)'
@@ -3284,13 +3350,13 @@ function applyWellEdit() {
   const targets = (mates.length > 1 && pairBox.checked) ? mates : [well];
 
   if (act === 'note') {
-    targets.forEach(k => logChange({ plate, well: k, action: 'note',
+    targets.forEach(k => mutate('note', { plate, well: k,
       from_lab: a.input_id, from_tiu: a.tiu_id, to_lab: a.input_id, to_tiu: a.tiu_id, note }));
   } else if (act === 'clear') {
     targets.forEach(k => {
       const cur = plateAssignments[plate][k];
       if (!cur) return;
-      logChange({ plate, well: k, action: 'cleared',
+      mutate('cleared', { plate, well: k, count: 1,
         from_lab: cur.input_id, from_tiu: cur.tiu_id, to_lab: '', to_tiu: '', note });
       delete plateAssignments[plate][k];
     });
@@ -3300,7 +3366,7 @@ function applyWellEdit() {
     if (!rep) { alert('Pick a replacement sample first.'); return; }
     targets.forEach(k => {
       const cur = plateAssignments[plate][k];
-      logChange({ plate, well: k, action: 'replaced',
+      mutate('replaced', { plate, well: k, count: 1,
         from_lab: cur ? cur.input_id : '', from_tiu: cur ? cur.tiu_id : '',
         to_lab: rep.input_id, to_tiu: rep.tiu_id, note });
       plateAssignments[plate][k] = { input_id: rep.input_id, tiu_id: rep.tiu_id };
@@ -3415,10 +3481,10 @@ function exportFileName() {
 }
 
 function buildChangeLogSheet() {
-  const rows = [['timestamp', 'user', 'plate', 'well', 'action',
+  const rows = [['timestamp', 'user', 'plate', 'well', 'wells_affected', 'action',
                  'from_lab_id', 'from_tiu_id', 'to_lab_id', 'to_tiu_id', 'note', 'session']];
   changeLog.forEach(c => {
-    rows.push([c.ts, c.user, c.plate, c.well, c.action,
+    rows.push([c.ts, c.user, c.plate, c.well, c.count === undefined ? '' : c.count, c.action,
                c.from_lab || '', c.from_tiu || '', c.to_lab || '', c.to_tiu || '',
                c.note || '', c.prior ? 'earlier' : 'this session']);
   });
