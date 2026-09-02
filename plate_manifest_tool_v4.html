@@ -1398,11 +1398,38 @@ function processFile(file) {
     restoredFrom = null;
     manualBridge = new Set();
     plateAssignments = {};
+    plateReserved = {};
+    areaUnlocked = {};
+    appliedPlanSummary = null;
+    appliedPlanMeta = null;
+    undoStack = [];
     loadSamples();
+    if (samples.length === 0) return;   // loadSamples refused the file
     detectPlates();
-    // A filled manifest brings its layout and history back with it
-    const restored = restoreAssignments();
-    const priorChanges = restoreChangeLog();
+
+    // _design_state is authoritative when present; the plate-map sheets remain
+    // as fallbacks so files exported before it existed still open.
+    let restored = 0, priorChanges = 0, manifestChanged = false;
+    const st = readDesignState();
+    if (st) {
+      const n = applyDesignState(st);
+      if (n < 0) {                       // refused: newer schema
+        uploadZone.style.display = '';
+        document.getElementById('mainUI').classList.add('hidden');
+        return;
+      }
+      if (n > 0) {
+        restored = n;
+        restoredFrom = 'saved design state';
+        priorChanges = changeLog.length;
+        const expect = (st.source_manifest || {}).tiu_order_hash;
+        if (expect && expect !== tiuOrderHash(samples.map(x => x.tiu_id))) manifestChanged = true;
+      }
+    }
+    if (!restored) {
+      restored = restoreAssignments();
+      priorChanges = restoreChangeLog();
+    }
     if (restored) {
       inferBridgingFromLayout();
       renderPlate();
@@ -1416,9 +1443,18 @@ function processFile(file) {
     const banner = document.getElementById('restoredBanner');
     if (restored) {
       banner.style.display = 'flex';
-      banner.innerHTML = `<span>↩ Filled manifest re-opened — <strong>${restored}</strong> well(s) restored from <strong>${restoredFrom}</strong>` +
+      banner.style.background = manifestChanged ? '#fff4e5' : '#eef4ff';
+      banner.style.borderColor = manifestChanged ? '#e8a33d' : '#9dbdf0';
+      banner.innerHTML = `<span>↩ Filled manifest re-opened — <strong>${restored}</strong> well(s) restored from <strong>${escHtml(restoredFrom)}</strong>` +
         (priorChanges ? `, carrying <strong>${priorChanges}</strong> earlier change(s)` : '') +
-        `. Click any filled well to edit it.</span>`;
+        (appliedPlanSummary ? `. Plan: seed <strong>${escHtml(String(appliedPlanSummary.opts.seed))}</strong>, ` +
+          `${escHtml(appliedPlanSummary.opts.mode)}, window ${appliedPlanSummary.effectiveWindow}` : '') +
+        `. Click any filled well to edit it.` +
+        (manifestChanged
+          ? `<br><strong>⚠ The Input Samples sheet has changed since this design was made.</strong> ` +
+            `The layout still refers to the samples it was built from, so it may no longer be ` +
+            `reproducible from the seed. Check before running.`
+          : '') + `</span>`;
     } else {
       banner.style.display = 'none';
     }
@@ -2604,6 +2640,44 @@ function strandedWells(plateNum, replicates, layout) {
 let autofillPlan = null;
 let lastPlanMeta = null;   // parameters of the plan currently previewed
 let appliedPlanMeta = null; // parameters of the plan actually applied (→ Design Log)
+// The Design Log is built from this rather than from the live plan object: it
+// holds only plain data, so it survives a round-trip through _design_state and
+// a reopened design reports the plan that actually produced it.
+let appliedPlanSummary = null;
+
+function summarisePlan(m) {
+  if (!m || m.empty) return null;
+  return {
+    opts: Object.assign({}, m.opts),
+    platesUsed: m.platesUsed.slice(),
+    effectiveWindow: m.effectiveWindow,
+    sampleCount: m.sampleCount,
+    unitCount: m.unitCount,
+    manualHeld: (m.manualHeld || []).map(x => x.input_id),
+    bridging: (m.bridging || []).map(x => x.input_id),
+    unplaced: (m.unplaced || []).reduce((a, u) => a + u.samples.length, 0)
+  };
+}
+
+// Group x plate counts taken from the live layout rather than the plan object.
+// That survives restore, and it stays true after hand edits, which the plan
+// object does not.
+function compositionByGroup(groupField, platesUsed) {
+  const counts = {};
+  platesUsed.forEach(p => {
+    const seen = new Set();
+    Object.values(plateAssignments[p] || {}).forEach(a => {
+      if (seen.has(a.tiu_id)) return;
+      seen.add(a.tiu_id);
+      const src = byTiu[a.tiu_id];
+      if (!src || !isAutofillable(src)) return;
+      const g = groupKeyOf(src, groupField);
+      counts[g] = counts[g] || {};
+      counts[g][p] = (counts[g][p] || 0) + 1;
+    });
+  });
+  return counts;
+}
 
 function readAutofillOptions() {
   const winEl = document.getElementById('ditherWindow');
@@ -3151,6 +3225,7 @@ function applyAutofill() {
           `${o.replicates || '?'} replicate(s)`
   });
   appliedPlanMeta = lastPlanMeta;
+  appliedPlanSummary = summarisePlan(lastPlanMeta);
   closeAutofillModal();
   selectedWells.clear();
   renderPlate();
@@ -3539,12 +3614,22 @@ function downloadExcel() {
     wb.Sheets['Change Log'] = buildChangeLogSheet();
   }
 
+  // Hidden state sheet, written last so it captures everything above
+  wb.SheetNames.push(DESIGN_STATE_SHEET);
+  wb.Sheets[DESIGN_STATE_SHEET] = buildDesignStateSheet();
+
   // Design Log — records the randomisation so the layout can be reproduced
   const log = buildDesignLogSheet();
   if (log) {
     wb.SheetNames.push('Design Log');
     wb.Sheets['Design Log'] = log;
   }
+
+  // Hide the state sheet: it is machine data, and a reader poking at it would
+  // only be able to break the round-trip.
+  wb.Workbook = wb.Workbook || {};
+  wb.Workbook.Sheets = wb.SheetNames.map(n =>
+    n === DESIGN_STATE_SHEET ? { name: n, Hidden: 1 } : { name: n, Hidden: 0 });
 
   XLSX.writeFile(wb, exportFileName());
 }
@@ -3664,8 +3749,8 @@ function buildInstanceSheet() {
 // parameter needed to regenerate the identical layout, plus the realised
 // group x plate composition — handy for a methods section.
 function buildDesignLogSheet() {
-  const m = appliedPlanMeta;
-  if (!m || m.empty) {
+  const m = appliedPlanSummary;
+  if (!m) {
     // An edit-only session still deserves a provenance record
     if (!changeLog.length) return null;
     const rows = [
@@ -3720,7 +3805,7 @@ function buildDesignLogSheet() {
   rows.push(['Random seed', String(o.seed)]);
   rows.push(['Subjects kept whole', o.keepSubjectTogether ? 'yes' : 'no']);
   if (m.manualHeld && m.manualHeld.length) {
-    rows.push(['Bridged in app (placed by hand)', m.manualHeld.map(s => s.input_id).join(', ')]);
+    rows.push(['Bridged in app (placed by hand)', m.manualHeld.join(', ')]);
   }
   rows.push(['Samples auto-placed', m.sampleCount]);
   rows.push(['Units dealt', m.unitCount]);
@@ -3729,19 +3814,28 @@ function buildDesignLogSheet() {
 
   rows.push(['Group x plate composition (samples)']);
   rows.push(['Group', ...m.platesUsed.map(p => `Plate ${p}`), 'Total']);
-  const counts = {};
-  m.groupNames.forEach(g => { counts[g] = {}; });
-  m.platesUsed.forEach(p => {
-    m.plateUnits[p].forEach(u => {
-      counts[u.group][p] = (counts[u.group][p] || 0) + u.samples.length;
-    });
+  const counts = compositionByGroup(m.opts.groupField, m.platesUsed);
+  // Order by first appearance in the manifest, not by the order wells happened
+  // to be walked — otherwise a reopened design lists the same rows in a
+  // different sequence and two exports of one design fail to compare.
+  const firstSeen = {};
+  samples.forEach((x, i) => {
+    const g = groupKeyOf(x, m.opts.groupField);
+    if (firstSeen[g] === undefined) firstSeen[g] = i;
   });
-  m.groupNames.forEach(g => {
+  const groupNames = Object.keys(counts).sort((a, b) =>
+    (firstSeen[a] === undefined ? 1e9 : firstSeen[a]) -
+    (firstSeen[b] === undefined ? 1e9 : firstSeen[b]) || a.localeCompare(b));
+  groupNames.forEach(g => {
     const row = m.platesUsed.map(p => counts[g][p] || 0);
     const total = row.reduce((a, b) => a + b, 0);
     if (total > 0) rows.push([g, ...row, total]);
   });
-  rows.push(['Wells used (cols 1-10)', ...m.platesUsed.map(p => m.used[p] * o.replicates), '']);
+  // Counted from the live layout rather than the plan object, so it survives a
+  // reopen and stays true after hand edits.
+  rows.push(['Wells used (outside the control area)',
+    ...m.platesUsed.map(p => Object.keys(plateAssignments[p] || {})
+      .filter(k => !isReserved(p, k)).length), '']);
 
   rows.push([]);
   rows.push(['Sample types per plate (wells)']);
@@ -3787,6 +3881,122 @@ function plateComposition(p) {
     prepTypes: [...prep],
     summary: entries.map(e => `${e[0]} ${e[1]} wells`).join(', ')
   };
+}
+
+// ─── Design state (ticket 1.5) ────────────────────────────────────────────────
+// A hidden sheet carrying the whole design as JSON. Sample Instances and the
+// Analysis grid can rebuild *where samples sit*, but not the seed, the autofill
+// options, the reserved areas or the unlock flags — so a reopened design used to
+// re-export claiming no plan had been applied. This sheet is the authoritative
+// source on load; the older sheets remain as fallbacks for files in circulation.
+const DESIGN_STATE_SHEET = '_design_state';
+const STATE_CHUNK = 30000;   // Excel caps a cell at 32767 characters
+
+// A fingerprint over the tiu_id sequence, used to notice that the manifest was
+// edited after the design was made. FNV-1a rather than SHA-256: crypto.subtle
+// is unavailable from a file:// page, and this is change detection, not a
+// security control.
+function tiuOrderHash(list) {
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  const str = list.join('\u0001');
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 16777619) >>> 0;
+    h2 = Math.imul(h2 ^ (c + i), 2166136261) >>> 0;
+  }
+  return ('00000000' + h1.toString(16)).slice(-8) + ('00000000' + h2.toString(16)).slice(-8);
+}
+
+function buildDesignState() {
+  const reserved = {};
+  Object.entries(plateReserved).forEach(([p, set]) => { reserved[p] = [...set].sort(); });
+  const assignments = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    const w = plateAssignments[p] || {};
+    if (!Object.keys(w).length) continue;
+    assignments[p] = {};
+    Object.keys(w).sort().forEach(k => { assignments[p][k] = w[k].tiu_id; });
+  }
+  return {
+    schema_version: STATE_SCHEMA_VERSION,
+    designer_version: DESIGNER_VERSION,
+    exported_at: new Date().toISOString(),
+    exported_by: currentUser() || '',
+    source_manifest: {
+      filename: originalFileName,
+      row_count: samples.length,
+      tiu_order_hash: tiuOrderHash(samples.map(x => x.tiu_id))
+    },
+    total_plates: totalPlates,
+    plate_reserved: reserved,
+    area_unlocked: Object.keys(areaUnlocked).map(Number),
+    manual_bridge: [...manualBridge],
+    applied_plan_meta: appliedPlanSummary,
+    instance_ids: {},              // minted in ticket 1.6
+    assignments,
+    change_log: changeLog
+  };
+}
+
+function buildDesignStateSheet() {
+  const json = JSON.stringify(buildDesignState());
+  const rows = [['PhIPSeq Plate Designer state — do not edit. Reopen this file in the designer.']];
+  for (let i = 0; i < json.length; i += STATE_CHUNK) rows.push([json.slice(i, i + STATE_CHUNK)]);
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{ wch: 90 }];
+  return ws;
+}
+
+// ─── Design state: read ───────────────────────────────────────────────────────
+function readDesignState() {
+  const name = workbook.SheetNames.find(x => x.toLowerCase() === DESIGN_STATE_SHEET);
+  if (!name) return null;
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[name], { header: 1 });
+  const json = rows.slice(1).map(r => (r && r[0]) || '').join('');
+  if (!json) return null;
+  try { return JSON.parse(json); } catch (e) { return { __corrupt: String(e.message) }; }
+}
+
+// Returns the number of wells restored, or -1 when the file must be refused.
+function applyDesignState(st) {
+  if (st.__corrupt) {
+    alert(`This file's saved design state could not be read (${st.__corrupt}).\n\n` +
+      `Falling back to the plate maps, which restore the layout but not the seed ` +
+      `or autofill options.`);
+    return 0;
+  }
+  if (Number(st.schema_version) > STATE_SCHEMA_VERSION) {
+    alert(`This file was written by a newer version of the designer ` +
+      `(state schema ${st.schema_version}, this build understands ` +
+      `${STATE_SCHEMA_VERSION}).\n\nOpening it here could silently drop part of the ` +
+      `design, so it has not been loaded. Use designer version ` +
+      `${st.designer_version || 'newer than ' + DESIGNER_VERSION} or later.`);
+    return -1;
+  }
+
+  totalPlates = Number(st.total_plates) || totalPlates;
+  plateReserved = {};
+  Object.entries(st.plate_reserved || {}).forEach(([p, wells]) => {
+    plateReserved[p] = new Set(wells);
+  });
+  areaUnlocked = {};
+  (st.area_unlocked || []).forEach(p => { areaUnlocked[p] = true; });
+  manualBridge = new Set(st.manual_bridge || []);
+  appliedPlanSummary = st.applied_plan_meta || null;
+  changeLog = (st.change_log || []).map(c => Object.assign({}, c, { prior: true }));
+
+  let restored = 0;
+  plateAssignments = {};
+  for (let p = 1; p <= totalPlates; p++) plateAssignments[p] = {};
+  Object.entries(st.assignments || {}).forEach(([p, wells]) => {
+    plateAssignments[p] = plateAssignments[p] || {};
+    Object.entries(wells).forEach(([well, tiu]) => {
+      const src = byTiu[tiu];
+      plateAssignments[p][well] = { input_id: src ? src.input_id : tiu, tiu_id: tiu };
+      restored++;
+    });
+  });
+  return restored;
 }
 
 // ─── Excel styling ────────────────────────────────────────────────────────────
