@@ -1017,6 +1017,16 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
             <span id="dupList" style="color:#8a6a00;word-break:break-all;font-family:'DM Mono',monospace;"></span>
           </div>
         </div>
+        <div id="typeWarning" style="display:none; margin-bottom:8px; padding:10px 12px; background:#fef9ec; border:1px solid #e8c840; border-radius:7px; flex-direction:column; gap:5px;">
+          <div style="display:flex;align-items:center;gap:7px;font-size:12px;color:#8a6a00;font-weight:600;">
+            ⚠ Unrecognised sample type<span id="typeWarnPlural"></span>
+            <button class="btn btn-ghost" style="margin-left:auto;padding:1px 8px;font-size:10px;"
+                    onclick="document.getElementById('typeWarning').style.display='none';">Dismiss</button>
+          </div>
+          <div style="font-size:11px;color:#7a6a40;line-height:1.5;">
+            <span id="typeWarnBody"></span>
+          </div>
+        </div>
         <div class="panel">
           <div class="panel-header"><div class="dot"></div> Input Samples</div>
           <div class="search-box">
@@ -1220,6 +1230,10 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         <label class="toggle-wrap">
           <input type="checkbox" id="keepSubjectTogether" checked onchange="autofillOptionChanged()">
           <span>Keep every sample from one subject on the same plate (longitudinal draws stay together)</span>
+        </label>
+        <label class="toggle-wrap">
+          <input type="checkbox" id="partitionByType" onchange="autofillOptionChanged()">
+          <span>Never mix sample types on a plate — give each type its own plates (IgG normalisation differs between serum and CSF)</span>
         </label>
       </div>
     </div>
@@ -1580,6 +1594,7 @@ function resetDesigner() {
   uploadZone.style.display = '';
   document.getElementById('restoredBanner').style.display = 'none';
   document.getElementById('dupWarning').style.display = 'none';
+  document.getElementById('typeWarning').style.display = 'none';
   document.getElementById('fileName').textContent = '—';
   ['sampleCount', 'plateCount', 'totalAssigned', 'totalWells']
     .forEach(id => { document.getElementById(id).textContent = '0'; });
@@ -1764,7 +1779,9 @@ function loadSamples() {
       subject_id: getVal(row, 'subject_id'),
       subject_age_yrs: getVal(row, 'subject_age_yrs'),
       subject_sex: getVal(row, 'subject_sex'),
-      sample_type: getVal(row, 'sample_type'),
+      sample_type: getVal(row, 'sample_type'),   // normalised just below
+      sample_type_detail: '',
+      sample_type_raw: '',
       volume_mL: getVal(row, 'volume_ml'),
       collection_date: getVal(row, 'collection_date'),
       cohort: getVal(row, 'cohort'),
@@ -1776,6 +1793,20 @@ function loadSamples() {
       rowIdx: i
     });
   }
+
+  // Normalise sample types before anything reads them: eligibility, grouping,
+  // colouring and the exports all key off the canonical value.
+  const unknownTypes = {};
+  samples.forEach(s => {
+    const n = normaliseSampleType(s.sample_type);
+    s.sample_type = n.type;
+    s.sample_type_detail = n.detail;
+    s.sample_type_raw = n.raw;
+    if (n.type && !n.known) {
+      (unknownTypes[n.type] = unknownTypes[n.type] || []).push(n.raw);
+    }
+  });
+  reportUnknownTypes(unknownTypes);
 
   byTiu = {};
   byInput = {};
@@ -1797,6 +1828,28 @@ function loadSamples() {
       duplicateIds.add(input_id + '|||' + key.split('|||')[1]);
     }
   });
+
+  // Distinct from the generic "not auto-filled" line: that one lists types the
+  // tool knows and deliberately leaves to a person, this one lists types it did
+  // not recognise at all, which is nearly always a typo in the manifest.
+  function reportUnknownTypes(map) {
+    const banner = document.getElementById('typeWarning');
+    if (!banner) return;
+    const names = Object.keys(map).sort();
+    if (!names.length) { banner.style.display = 'none'; return; }
+    const known = Object.keys(SAMPLE_TYPE_ALIASES).join(', ');
+    document.getElementById('typeWarnPlural').textContent = names.length > 1 ? 's' : '';
+    document.getElementById('typeWarnBody').innerHTML =
+      names.map(t => {
+        const rows = map[t].length;
+        const variants = [...new Set(map[t])].filter(v => v !== t);
+        return `<strong>${escHtml(t)}</strong> — ${rows} row(s)` +
+               (variants.length ? ` (written as ${variants.map(v => `"${escHtml(v)}"`).join(', ')})` : '');
+      }).join('<br>') +
+      `<br><br>These are treated as their own type: they are never auto-filled, and must be ` +
+      `placed by hand. Recognised types are ${escHtml(known)}. Correct the manifest if this is a typo.`;
+    banner.style.display = 'flex';
+  }
 
   // Show/hide duplicate warning banner
   const banner = document.getElementById('dupWarning');
@@ -2249,6 +2302,61 @@ function updateControlAreaLabel() {
       ? 'Re-lock the control area on this plate'
       : 'Unfreeze the control area on this plate so wells there can be assigned by hand';
   }
+}
+
+// ─── Sample type normalisation ───────────────────────────────────────────────
+// A manifest is typed by hand, so "Serum ", "serum", "Plasma (EDTA)" and
+// "CSF (post-LP)" all mean what they obviously mean — but an exact lowercase
+// match against 'serum'/'csf'/'plasma' silently dropped every one of them into
+// the skipped pile, where they looked like a deliberate exclusion rather than a
+// typo. Anything unrecognised now says so by name instead of disappearing.
+//
+// The canonical label is what the tool reasons and reports with; the qualifier
+// in parentheses is kept separately, since "EDTA" or "post-LP" matters at the
+// bench even though it does not change how the sample is handled here. The
+// Input Samples sheet is copied through untouched, so the original text is
+// never lost from the workbook.
+const SAMPLE_TYPE_ALIASES = {
+  serum: ['serum', 'sera', 'serum sample', 'ser'],
+  plasma: ['plasma', 'edta plasma', 'citrate plasma', 'heparin plasma', 'plsm'],
+  CSF: ['csf', 'c.s.f.', 'cerebrospinal fluid', 'cerebro-spinal fluid', 'spinal fluid'],
+  mAb: ['mab', 'mabs', 'monoclonal', 'monoclonal antibody', 'monoclonal antibodies',
+        'antibody control', 'mab control'],
+  'assay control': ['assay control', 'assay ctrl', 'assay-control', 'process control'],
+  control: ['control', 'ctrl', 'bead only', 'bead-only', 'bead only control',
+            'bead-only control', 'beads', 'blank', 'negative control', 'no-serum control',
+            'buffer', 'buffer only']
+};
+
+const SAMPLE_TYPE_LOOKUP = (() => {
+  const m = {};
+  Object.entries(SAMPLE_TYPE_ALIASES).forEach(([canon, list]) => {
+    m[canon.toLowerCase()] = canon;
+    list.forEach(a => { m[a] = canon; });
+  });
+  return m;
+})();
+
+// Returns { type, detail, raw, known }. An unknown type keeps its cleaned text
+// as the type, so grouping and filtering still work — it is flagged, not lost.
+function normaliseSampleType(raw) {
+  const text = String(raw === undefined || raw === null ? '' : raw).replace(/\s+/g, ' ').trim();
+  if (!text) return { type: '', detail: '', raw: '', known: true };
+
+  // Qualifiers in brackets are bench detail, not a different kind of sample
+  const details = [];
+  const stripped = text
+    .replace(/[([{]([^)\]}]*)[)\]}]/g, (_, inner) => { details.push(inner.trim()); return ' '; })
+    .replace(/\s+/g, ' ').trim();
+
+  const key = stripped.toLowerCase().replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const canon = SAMPLE_TYPE_LOOKUP[key] || SAMPLE_TYPE_LOOKUP[key.replace(/s$/, '')];
+  return {
+    type: canon || stripped,
+    detail: details.filter(Boolean).join('; '),
+    raw: text,
+    known: !!canon
+  };
 }
 
 function isAssayControl(sample) {
@@ -2778,7 +2886,13 @@ function buildGroupBySelect() {
 // A "unit" is what gets dealt onto a plate: one sample, or — when
 // "keep a subject together" is on — every sample belonging to one subject.
 // Each sample in the unit consumes one replicate chunk (2 side-by-side wells).
-function buildUnits(list, keepSubjectTogether, groupField) {
+// A unit is what gets dealt to a plate as one indivisible thing. Keeping a
+// subject whole and keeping sample types apart are in direct conflict for any
+// subject with both a serum and a CSF draw, so when types are partitioned the
+// subject is held together *within* each type instead — the alternative is a
+// plate that quietly mixes matrices, which is the thing the option exists to
+// prevent.
+function buildUnits(list, keepSubjectTogether, groupField, partitionByType) {
   if (!keepSubjectTogether) {
     return list.map(s => ({
       id: s.tiu_id, label: s.input_id, subject_id: s.subject_id,
@@ -2794,12 +2908,13 @@ function buildUnits(list, keepSubjectTogether, groupField) {
                  group: groupKeyOf(s, groupField), samples: [s], order: s.rowIdx });
       return;
     }
-    if (!bySubject[sid]) {
-      bySubject[sid] = { id: 'SUBJ:' + sid, label: sid, subject_id: sid,
+    const key = partitionByType ? sid + '|' + (s.sample_type || '') : sid;
+    if (!bySubject[key]) {
+      bySubject[key] = { id: 'SUBJ:' + key, label: sid, subject_id: sid,
                          group: groupKeyOf(s, groupField), samples: [], order: s.rowIdx };
-      out.push(bySubject[sid]);
+      out.push(bySubject[key]);
     }
-    bySubject[sid].samples.push(s);
+    bySubject[key].samples.push(s);
   });
   return out;
 }
@@ -2872,7 +2987,8 @@ function summarisePlan(m) {
     unitCount: m.unitCount,
     manualHeld: (m.manualHeld || []).map(x => x.input_id),
     bridging: (m.bridging || []).map(x => x.input_id),
-    unplaced: (m.unplaced || []).reduce((a, u) => a + u.samples.length, 0)
+    unplaced: (m.unplaced || []).reduce((a, u) => a + u.samples.length, 0),
+    typePartition: m.typePartition ? JSON.parse(JSON.stringify(m.typePartition)) : null
   };
 }
 
@@ -2907,6 +3023,7 @@ function readAutofillOptions() {
     layout: document.getElementById('replicateLayout').value,
     sampleOrder: document.getElementById('sampleOrder').value,
     keepSubjectTogether: document.getElementById('keepSubjectTogether').checked,
+    partitionByType: document.getElementById('partitionByType').checked,
     replicates: parseInt(document.getElementById('replicateCount').value, 10) || 2
   };
 }
@@ -2938,7 +3055,7 @@ function computeAutofillPlan(opts) {
              bridgeIgnored: samples.filter(s => isRepeating(s) && !isAutofillable(s)) };
   }
 
-  const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField);
+  const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField, opts.partitionByType);
 
   // Groups are processed in the order they first appear in the manifest, so
   // "cohort A, then cohort B, …" means what it says on the plate.
@@ -3021,111 +3138,167 @@ function computeAutofillPlan(opts) {
     return list.slice(i);
   }
 
-  let windows = [];
-  let effectiveWindow = 0;
+  const planWindows = [];      // every window dealt, across all partitions
+  let planWindow = 0;          // the largest window size actually used
+  const typePartition = {};    // sample type -> the plates it was given, when partitioning
 
   if (opts.mode === 'dither') {
-    // Only spread over as many plates as the run actually needs — dithering
-    // must not leave half-empty plates behind. Any plate beyond that is kept
-    // in reserve as an overflow window.
-    const demand = units.reduce((a, u) => a + u.samples.length, 0);
-    // A bridging sample eats one chunk on every plate it lands on, so the
-    // room left for ordinary samples — and therefore the plate count — has to
-    // account for it up front.
-    const bridgeLoad = p => bridging.filter(b => {
-      const spec = repeatSpec(b);
-      return spec === 'all' || spec.indexOf(p) >= 0;
-    }).length;
-    let acc = 0, needed = 0;
-    for (const p of platePool) {
-      if (acc >= demand) break;
-      acc += Math.max(0, capacity[p] - bridgeLoad(p));
-      needed++;
-    }
-    needed = Math.max(1, needed);
-    // A plate named explicitly in repeat_across_plates is used even if the
-    // sample count alone would not have reached it
-    const explicit = bridging.reduce((mx, b) => {
-      const spec = repeatSpec(b);
-      return spec === 'all' ? mx : Math.max(mx, ...spec);
-    }, 0);
-    if (explicit > 0) {
-      const idx = platePool.indexOf(explicit);
-      if (idx >= 0) needed = Math.max(needed, idx + 1);
-    }
-    const active = platePool.slice(0, needed);
-
-    // Place bridging samples first so they take the same well on every plate
-    active.forEach(p => {
-      bridging.forEach((b, bi) => {
+    // Deal a set of groups across a set of plates. Factored out so the whole
+    // allocation can be run once per sample type when types must not share a
+    // plate — each call sees a disjoint slice of the run and cannot spill into
+    // another type's plates, including through its own overflow.
+    const dealAcross = (pool, bridgeList, names, unitsOf) => {
+      const windows = [];              // this call's windows, merged in below
+      let effectiveWindow = 0;
+      // Only spread over as many plates as the run actually needs — dithering
+      // must not leave half-empty plates behind. Any plate beyond that is kept
+      // in reserve as an overflow window.
+      const demand = names.reduce((a, g) => a + unitsOf[g].reduce((x, u) => x + u.samples.length, 0), 0);
+      // A bridgeList sample eats one chunk on every plate it lands on, so the
+      // room left for ordinary samples — and therefore the plate count — has to
+      // account for it up front.
+      const bridgeLoad = p => bridgeList.filter(b => {
         const spec = repeatSpec(b);
-        if (spec !== 'all' && spec.indexOf(p) < 0) return;
-        const already = Object.values(plateAssignments[p] || {}).some(a => a.input_id === b.input_id);
-        if (already) return;
-        if (capacity[p] - used[p] < 1 || bi >= capacity[p]) return;
-        placeUnit(p, { id: b.tiu_id, label: b.input_id, subject_id: b.subject_id,
-                       group: BRIDGE_GROUP, samples: [b],
-                       order: -1, pinned: true, fixedChunk: bi });
+        return spec === 'all' || spec.indexOf(p) >= 0;
+      }).length;
+      let acc = 0, needed = 0;
+      for (const p of pool) {
+        if (acc >= demand) break;
+        acc += Math.max(0, capacity[p] - bridgeLoad(p));
+        needed++;
+      }
+      needed = Math.max(1, needed);
+      // A plate named explicitly in repeat_across_plates is used even if the
+      // sample count alone would not have reached it
+      const explicit = bridgeList.reduce((mx, b) => {
+        const spec = repeatSpec(b);
+        return spec === 'all' ? mx : Math.max(mx, ...spec);
+      }, 0);
+      if (explicit > 0) {
+        const idx = pool.indexOf(explicit);
+        if (idx >= 0) needed = Math.max(needed, idx + 1);
+      }
+      const active = pool.slice(0, needed);
+
+      // Place bridgeList samples first so they take the same well on every plate
+      active.forEach(p => {
+        bridgeList.forEach((b, bi) => {
+          const spec = repeatSpec(b);
+          if (spec !== 'all' && spec.indexOf(p) < 0) return;
+          const already = Object.values(plateAssignments[p] || {}).some(a => a.input_id === b.input_id);
+          if (already) return;
+          if (capacity[p] - used[p] < 1 || bi >= capacity[p]) return;
+          placeUnit(p, { id: b.tiu_id, label: b.input_id, subject_id: b.subject_id,
+                         group: BRIDGE_GROUP, samples: [b],
+                         order: -1, pinned: true, fixedChunk: bi });
+        });
       });
-    });
-    const reserve = platePool.slice(needed);
+      const reserve = pool.slice(needed);
 
-    const requested = parseInt(opts.windowSize, 10);
-    effectiveWindow = Math.max(1, Math.min(
-      Number.isFinite(requested) && requested > 0 ? requested : active.length,
-      active.length
-    ));
-    for (let i = 0; i < active.length; i += effectiveWindow) {
-      windows.push(active.slice(i, i + effectiveWindow));
-    }
-    // Plates beyond what the run needs are overflow only — they get no quota,
-    // so a short run stays compact instead of thinning across every plate.
-    const activeWindows = windows.length;
-    for (let i = 0; i < reserve.length; i += effectiveWindow) {
-      windows.push(reserve.slice(i, i + effectiveWindow));
-    }
-    // Each window gets a share of every group proportional to its capacity, so
-    // no group can drift into one end of the run. Inside a window the groups
-    // are then dealt one after another, in manifest order: all of the first
-    // group, then all of the second, and so on.
-    const winCap = windows.map(win => win.reduce((a, p) => a + capacity[p], 0));
-    const activeCap = winCap.slice(0, activeWindows);
-    const spare = new Array(windows.length - activeWindows).fill(0);
-    const queues = {};
-    const quota = {};
-    groupNames.forEach(g => {
-      queues[g] = groupUnits[g].slice();
-      const demand = queues[g].reduce((a, u) => a + u.samples.length, 0);
-      quota[g] = apportion(demand, activeCap).concat(spare);
-    });
+      const requested = parseInt(opts.windowSize, 10);
+      effectiveWindow = Math.max(1, Math.min(
+        Number.isFinite(requested) && requested > 0 ? requested : active.length,
+        active.length
+      ));
+      for (let i = 0; i < active.length; i += effectiveWindow) {
+        windows.push(active.slice(i, i + effectiveWindow));
+      }
+      // Plates beyond what the run needs are overflow only — they get no quota,
+      // so a short run stays compact instead of thinning across every plate.
+      const activeWindows = windows.length;
+      for (let i = 0; i < reserve.length; i += effectiveWindow) {
+        windows.push(reserve.slice(i, i + effectiveWindow));
+      }
+      // Each window gets a share of every group proportional to its capacity, so
+      // no group can drift into one end of the run. Inside a window the groups
+      // are then dealt one after another, in manifest order: all of the first
+      // group, then all of the second, and so on.
+      const winCap = windows.map(win => win.reduce((a, p) => a + capacity[p], 0));
+      const activeCap = winCap.slice(0, activeWindows);
+      const spare = new Array(windows.length - activeWindows).fill(0);
+      const queues = {};
+      const quota = {};
+      names.forEach(g => {
+        queues[g] = unitsOf[g].slice();
+        const demand = queues[g].reduce((a, u) => a + u.samples.length, 0);
+        quota[g] = apportion(demand, activeCap).concat(spare);
+      });
 
-    let carry = [];
-    windows.forEach((win, wi) => {
-      const work = carry;
-      carry = [];
-      groupNames.forEach(g => {
-        let want = quota[g][wi];
-        while (want > 0 && queues[g].length) {
-          const u = queues[g][0];
-          work.push(queues[g].shift());
-          want -= u.samples.length;
+      let carry = [];
+      windows.forEach((win, wi) => {
+        const work = carry;
+        carry = [];
+        names.forEach(g => {
+          let want = quota[g][wi];
+          while (want > 0 && queues[g].length) {
+            const u = queues[g][0];
+            work.push(queues[g].shift());
+            want -= u.samples.length;
+          }
+        });
+        const byGroup = {};
+        work.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
+        names.forEach(g => {
+          if (byGroup[g]) dealRun(win, byGroup[g]).forEach(u => carry.push(u));
+        });
+      });
+
+      // Anything a window could not take, plus any rounding remainder
+      names.forEach(g => queues[g].forEach(u => carry.push(u)));
+      if (carry.length) {
+        const byGroup = {};
+        carry.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
+        names.forEach(g => {
+          if (byGroup[g]) dealRun(pool, byGroup[g]).forEach(u => unplaced.push(u));
+        });
+      }
+      planWindows.push(...windows);
+      planWindow = Math.max(planWindow, effectiveWindow);
+    };
+
+    if (opts.partitionByType) {
+      // IgG normalisation differs between matrices, so a plate holding serum
+      // and CSF together needs two preps run side by side. Partitioning gives
+      // each type its own plates: types are served in manifest order, each
+      // taking as many plates as its own sample count needs. A type that runs
+      // out of plates reports its remainder as unplaced rather than borrowing
+      // from the next type — silently mixing is the failure this option exists
+      // to prevent.
+      const typeOf = u => (u.samples[0] && u.samples[0].sample_type) || '';
+      const typeOrder = [];
+      units.forEach(u => { const t = typeOf(u); if (!typeOrder.includes(t)) typeOrder.push(t); });
+
+      let cursor = 0;
+      typeOrder.forEach((t, ti) => {
+        const mine = {}, myNames = [];
+        groupNames.forEach(g => {
+          const list = (groupUnits[g] || []).filter(u => typeOf(u) === t);
+          if (list.length) { mine[g] = list; myNames.push(g); }
+        });
+        const myBridges = bridging.filter(x => (x.sample_type || '') === t);
+        if (myBridges.length && !myNames.includes(BRIDGE_GROUP)) {
+          mine[BRIDGE_GROUP] = []; myNames.push(BRIDGE_GROUP);
         }
-      });
-      const byGroup = {};
-      work.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
-      groupNames.forEach(g => {
-        if (byGroup[g]) dealRun(win, byGroup[g]).forEach(u => carry.push(u));
-      });
-    });
+        if (!myNames.length) return;
 
-    // Anything a window could not take, plus any rounding remainder
-    groupNames.forEach(g => queues[g].forEach(u => carry.push(u)));
-    if (carry.length) {
-      const byGroup = {};
-      carry.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
-      groupNames.forEach(g => {
-        if (byGroup[g]) dealRun(platePool, byGroup[g]).forEach(u => unplaced.push(u));
+        const demand = myNames.reduce((a, g) =>
+          a + mine[g].reduce((x, u) => x + u.samples.length, 0), 0);
+        let acc = 0, take = 0;
+        while (cursor + take < platePool.length && acc < demand) {
+          acc += capacity[platePool[cursor + take]];
+          take++;
+        }
+        // The last type sweeps up whatever is left, so no plate is stranded
+        const isLast = ti === typeOrder.length - 1;
+        const slice = isLast ? platePool.slice(cursor)
+                             : platePool.slice(cursor, cursor + Math.max(1, take));
+        typePartition[t] = slice.slice();
+        cursor += slice.length;
+        if (slice.length) dealAcross(slice, myBridges, myNames, mine);
+        else myNames.forEach(g => mine[g].forEach(u => unplaced.push(u)));
       });
+    } else {
+      dealAcross(platePool, bridging, groupNames, groupUnits);
     }
   } else {
     // Block mode — v3 behaviour: cohorts form contiguous blocks, filled in
@@ -3225,7 +3398,8 @@ function computeAutofillPlan(opts) {
   return {
     empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging, manualHeld, stranded,
     bridgeIgnored,
-    platesUsed, capacity, used, unplaced, skippedTypes, windows, effectiveWindow,
+    platesUsed, capacity, used, unplaced, skippedTypes,
+    windows: planWindows, effectiveWindow: planWindow, typePartition,
     unitCount: units.length,
     sampleCount: eligible.length
   };
@@ -3324,7 +3498,18 @@ function previewAutofill() {
   const layoutName = { 'pair-down': 'side-by-side, down', 'pair-across': 'side-by-side, across',
                        'stack-down': 'stacked, down' }[opts.layout] || opts.layout;
   head.push(`${wellsPer === 2 ? 'Duplicates: ' + layoutName : wellsPer + ' well(s)/sample'} · Wells: <strong>${wellOrderLabel}</strong> · Samples: <strong>${opts.sampleOrder === 'random' ? 'randomised' : 'manifest order'}</strong> · Seed: <strong>${escHtml(opts.seed)}</strong>`);
-  if (opts.keepSubjectTogether) head.push('Subjects kept whole: every sample from one subject lands on the same plate.');
+  if (opts.keepSubjectTogether) {
+    head.push(opts.partitionByType
+      ? 'Subjects kept whole within each sample type — a subject with both serum and CSF is split across the two type blocks, since a plate cannot hold both.'
+      : 'Subjects kept whole: every sample from one subject lands on the same plate.');
+  }
+  if (opts.partitionByType) {
+    const split = Object.entries(res.typePartition || {})
+      .filter(([, ps]) => ps.length)
+      .map(([t, ps]) => `<strong>${escHtml(t || 'unspecified')}</strong>: plate${ps.length > 1 ? 's' : ''} ${ps.join(', ')}`);
+    head.push('Types kept apart: no plate carries more than one sample type.' +
+      (split.length ? ' ' + split.join(' · ') : ''));
+  }
   if (res.bridging && res.bridging.length) {
     const names = res.bridging.map(b => {
       const spec = repeatSpec(b);
@@ -3815,7 +4000,9 @@ function currentLayoutOpts() {
                         : parseInt((el('replicateCount') || {}).value, 10) || 2,
     layout: applied ? applied.layout : ((el('replicateLayout') || {}).value || 'pair-down'),
     keepSubjectTogether: applied ? !!applied.keepSubjectTogether
-                                 : !!(el('keepSubjectTogether') || {}).checked
+                                 : !!(el('keepSubjectTogether') || {}).checked,
+    partitionByType: applied ? !!applied.partitionByType
+                             : !!(el('partitionByType') || {}).checked
   };
 }
 
@@ -3919,12 +4106,16 @@ function validateLayout() {
 
   // Subject integrity, and bridges that drifted
   if (opts.keepSubjectTogether) {
+    // With types partitioned a subject with two matrices is split on purpose,
+    // so the subject is only expected to be whole within each type.
     const platesBySubject = {};
     Object.entries(wellsOf).forEach(([tiu, list]) => {
       const src = byTiu[tiu];
       if (!src || !src.subject_id) return;
       if (manualBridge.has(tiu) || repeatSpec(src)) return;   // bridging is deliberate
-      const set = platesBySubject[src.subject_id] = platesBySubject[src.subject_id] || new Set();
+      const key = opts.partitionByType
+        ? `${src.subject_id} (${src.sample_type || 'unspecified'})` : src.subject_id;
+      const set = platesBySubject[key] = platesBySubject[key] || new Set();
       list.forEach(x => set.add(x.plate));
     });
     const split = Object.entries(platesBySubject)
@@ -3933,6 +4124,25 @@ function validateLayout() {
     if (split.length)
       add(warnings, 'Subjects split across more than one plate', split,
         '"Keep subject together" was on for this design, so a batch effect could land inside a subject.');
+  }
+
+  if (opts.partitionByType) {
+    const mixed = [];
+    for (let p = 1; p <= totalPlates; p++) {
+      const types = {};
+      Object.values(plateAssignments[p] || {}).forEach(a => {
+        const src = byTiu[a.tiu_id];
+        if (!src || isAnyControl(src)) return;      // controls run on every plate
+        const t = src.sample_type || 'unspecified';
+        types[t] = (types[t] || 0) + 1;
+      });
+      const names = Object.keys(types);
+      if (names.length > 1)
+        mixed.push(`P${p}: ${names.map(t => `${t} ×${types[t]}`).join(', ')}`);
+    }
+    if (mixed.length)
+      add(errors, 'Plates holding more than one sample type', mixed,
+        'This design was built with sample types kept apart, so these plates need two preps.');
   }
 
   const drifted = [];
@@ -4132,8 +4342,8 @@ function mintInstanceUid(tiu_id, plate) {
 
 function buildInstanceSheet() {
   const META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
-                'volume_mL', 'collection_date', 'cohort', 'num_freeze_thaws',
-                'diagnosis', 'dither_group', 'notes'];
+                'sample_type_detail', 'volume_mL', 'collection_date', 'cohort',
+                'num_freeze_thaws', 'diagnosis', 'dither_group', 'notes'];
 
   // How many plates each sample sits on decides whether it needs a suffix
   const platesOf = {};
@@ -4255,7 +4465,14 @@ function buildDesignLogSheet() {
                                  scatter: 'Scattered (seeded)',
                                  sequential: 'Sequential (deal order)' }[o.wellOrder] || o.wellOrder]);
   rows.push(['Random seed', String(o.seed)]);
-  rows.push(['Subjects kept whole', o.keepSubjectTogether ? 'yes' : 'no']);
+  rows.push(['Subjects kept whole', o.keepSubjectTogether
+    ? (o.partitionByType ? 'yes, within each sample type' : 'yes') : 'no']);
+  rows.push(['Sample types kept apart', o.partitionByType ? 'yes — one type per plate' : 'no']);
+  if (o.partitionByType && m.typePartition) {
+    Object.entries(m.typePartition).filter(([, ps]) => ps && ps.length).forEach(([t, ps]) => {
+      rows.push([`  plates for ${t || 'unspecified'}`, ps.join(', ')]);
+    });
+  }
   if (m.manualHeld && m.manualHeld.length) {
     rows.push(['Bridged in app (placed by hand)', m.manualHeld.join(', ')]);
   }
