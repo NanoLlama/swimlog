@@ -1272,6 +1272,7 @@ let originalFileName = 'manifest';
 let duplicateIds = new Set(); // input_ids that appear more than once
 let changeLog = [];           // every edit made to a filled manifest, oldest first
 let restoredFrom = null;      // which sheet a re-opened layout was read back from
+let instanceIds = {};         // 'tiu_id|plate' -> instance_uid, minted at first export
 let editingWell = null;       // {plate, well} currently open in the well editor
 
 const ROWS = ['A','B','C','D','E','F','G','H'];
@@ -1354,6 +1355,7 @@ function resetDesigner() {
   changeLog = [];
   restoredFrom = null;
   editingWell = null;
+  instanceIds = {};
   manualBridge = new Set();
   plateReserved = {};
   areaUnlocked = {};
@@ -1396,6 +1398,7 @@ function processFile(file) {
     workbook = XLSX.read(e.target.result, { type: 'array' });
     changeLog = [];
     restoredFrom = null;
+    instanceIds = {};
     manualBridge = new Set();
     plateAssignments = {};
     plateReserved = {};
@@ -1643,7 +1646,7 @@ function restoreAssignments() {
     const hdr = (rows[0] || []).map(h => String(h || '').trim().toLowerCase());
     const col = n => hdr.indexOf(n);
     const cTiu = col('source_tiu_id'), cIn = col('source_input_id'),
-          cPlate = col('plate'), cWells = col('wells');
+          cPlate = col('plate'), cWells = col('wells'), cUid = col('instance_uid');
     if (cTiu >= 0 && cPlate >= 0 && cWells >= 0) {
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i];
@@ -1654,6 +1657,10 @@ function restoreAssignments() {
         const input_id = cIn >= 0 && r[cIn] ? String(r[cIn]).trim()
                                             : (byTiu[tiu] ? byTiu[tiu].input_id : tiu);
         if (!plateAssignments[plate]) plateAssignments[plate] = {};
+        // Instance uids outlive the state blob: without this, a file whose
+        // _design_state was stripped would re-mint ids already sent for
+        // sequencing.
+        if (cUid >= 0 && r[cUid]) instanceIds[instanceKey(tiu, plate)] = String(r[cUid]).trim();
         String(r[cWells] || '').split(/[,;]\s*/).forEach(w => {
           const key = w.trim().toUpperCase();
           if (!/^[A-H](?:[1-9]|1[0-2])$/.test(key)) return;
@@ -3679,6 +3686,29 @@ function buildChangeLogSheet() {
 // One row per sample-on-a-plate. The instance id carries the -Pn suffix
 // whenever a sample is used more than once, so it matches the plate maps and
 // stays unique for barcode assignment.
+// An instance is one physical usage of a sample: a tiu_id on a plate. Its uid
+// is minted the first time that usage is exported and never changes again,
+// because Phase 3 hangs the NGS barcode off it — a renamed id would silently
+// break the link between the design and the sequencing data.
+//
+// The display id keeps the familiar -P{n} suffix, but that suffix only appears
+// once a sample sits on more than one plate, so it is not stable: bridging a
+// sample later would rewrite ids that had already been issued. The uid always
+// carries the plate, whether or not the sample is bridged today.
+function instanceKey(tiu_id, plate) { return tiu_id + '|' + plate; }
+
+function mintInstanceUid(tiu_id, plate) {
+  const key = instanceKey(tiu_id, plate);
+  if (instanceIds[key]) return instanceIds[key];
+  const taken = new Set(Object.values(instanceIds));
+  let uid = `${tiu_id}-P${plate}`;
+  // Only reachable if a manifest's own tiu_id already ends in a plate suffix
+  // that collides with a minted one; a suffix keeps the uid unique either way.
+  for (let n = 2; taken.has(uid); n++) uid = `${tiu_id}-P${plate}#${n}`;
+  instanceIds[key] = uid;
+  return uid;
+}
+
 function buildInstanceSheet() {
   const META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
                 'volume_mL', 'collection_date', 'cohort', 'num_freeze_thaws',
@@ -3693,7 +3723,7 @@ function buildInstanceSheet() {
   }
 
   const rows = [];
-  rows.push(['instance_id', 'lab_instance_id', 'source_tiu_id', 'source_input_id',
+  rows.push(['instance_uid', 'instance_id', 'lab_instance_id', 'source_tiu_id', 'source_input_id',
              'plate', 'wells', 'n_wells', 'instance_no', 'instances_total',
              'repeated_across_plates', ...META]);
 
@@ -3720,6 +3750,7 @@ function buildInstanceSheet() {
         const src = byTiu[entry.tiu_id] || {};
         entry.wells.sort((a, b) => (wellRank[a] ?? 999) - (wellRank[b] ?? 999));
         rows.push([
+          mintInstanceUid(entry.tiu_id, p),
           entry.tiu_id + suffix,
           entry.input_id + suffix,
           entry.tiu_id,
@@ -3932,7 +3963,7 @@ function buildDesignState() {
     area_unlocked: Object.keys(areaUnlocked).map(Number),
     manual_bridge: [...manualBridge],
     applied_plan_meta: appliedPlanSummary,
-    instance_ids: {},              // minted in ticket 1.6
+    instance_ids: instanceIds,
     assignments,
     change_log: changeLog
   };
@@ -3982,6 +4013,7 @@ function applyDesignState(st) {
   areaUnlocked = {};
   (st.area_unlocked || []).forEach(p => { areaUnlocked[p] = true; });
   manualBridge = new Set(st.manual_bridge || []);
+  instanceIds = Object.assign({}, st.instance_ids || {});
   appliedPlanSummary = st.applied_plan_meta || null;
   changeLog = (st.change_log || []).map(c => Object.assign({}, c, { prior: true }));
 
