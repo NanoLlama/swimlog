@@ -555,7 +555,18 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     font-weight: 500;
   }
 
-  .selection-mode.hidden { display: none; }
+  /* Hidden by visibility, not display: the banner sits directly above the plate,
+     and appearing on the first drag step used to push the grid down under the
+     cursor mid-sweep — so a drag would stop a row short of where it was aimed.
+     The space is reserved whether or not anything is selected. */
+  .selection-mode.hidden {
+    /* The !important overrides the generic .hidden rule, which this element also
+       carries. It has to keep its box: the banner sits directly above the plate,
+       and appearing on the first drag step pushed the grid 60px down under the
+       cursor mid-sweep, so a drag aimed at F6 stopped at E6. */
+    display: flex !important;
+    visibility: hidden;
+  }
 
   /* Color swatch per sample */
   .swatch {
@@ -1043,6 +1054,11 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
               <input type="checkbox" id="showAssigned" onchange="filterSamples()">
               Show placed samples
             </label>
+            <label class="toggle-wrap" style="font-size:11px;font-weight:400;margin-bottom:8px;"
+                   title="Okabe–Ito palette plus a per-cohort glyph, so cohort is carried by shape as well as colour">
+              <input type="checkbox" id="colourSafe" onchange="toggleColourSafe()">
+              Colour-safe cohorts
+            </label>
             <select id="sampleTypeFilter" onchange="filterSamples()" style="width:100%; background:var(--bg); border:1px solid var(--border); border-radius:5px; color:var(--text); font-family:'DM Sans',sans-serif; font-size:12px; padding:6px 10px; outline:none; cursor:pointer;">
               <option value="">All sample types</option>
             </select>
@@ -1515,7 +1531,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'debb471';
+const DESIGNER_BUILD = 'afba7b1';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -1544,6 +1560,37 @@ const SAMPLE_COLORS = [
   '#5a8a20','#b84070','#1a7a8a','#a06000','#6040c0'
 ];
 const NO_COHORT_COLOR = '#6b7494';
+
+// Cohort was encoded in colour alone, which fails for roughly one man in twelve
+// and for anyone printing a plate map in mono. Colour-safe mode swaps in the
+// Okabe–Ito palette — eight hues chosen to stay distinguishable under the common
+// forms of colour vision deficiency — and adds a glyph, so cohort is carried by
+// shape as well as hue and survives a photocopier.
+const OKABE_ITO = [
+  '#0072b2', '#d55e00', '#009e73', '#cc79a7',
+  '#e69f00', '#56b4e9', '#8a6a00', '#333333'
+];
+const COHORT_GLYPHS = ['●', '▲', '■', '◆', '★', '▼', '⬢', '✚'];
+let colourSafeMode = false;
+let cohortGlyphMap = {};
+
+function paletteInUse() {
+  return colourSafeMode ? OKABE_ITO : SAMPLE_COLORS;
+}
+
+function glyphFor(sample) {
+  if (!colourSafeMode || !sample) return '';
+  return cohortGlyphMap[sample.cohort] || '';
+}
+
+function toggleColourSafe() {
+  colourSafeMode = document.getElementById('colourSafe').checked;
+  try { localStorage.setItem('phipseq_colour_safe', colourSafeMode ? '1' : '0'); } catch (e) {}
+  assignCohortColors();
+  buildCohortLegend();
+  renderSampleList();
+  renderPlate();
+}
 let sampleColorMap = {};   // keyed on tiu_id — input_id is not unique
 let byTiu = {};            // tiu_id -> sample, the primary key
 let byInput = {};          // input_id -> [samples], display convenience only
@@ -1562,6 +1609,13 @@ document.addEventListener('DOMContentLoaded', () => {
   if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
   loadVolumeSettings();
   buildVolumeRuleRows();
+  try {
+    if (localStorage.getItem('phipseq_colour_safe') === '1') {
+      colourSafeMode = true;
+      const el = document.getElementById('colourSafe');
+      if (el) el.checked = true;
+    }
+  } catch (e) { /* storage off — the default palette applies */ }
 });
 
 // ─── Session autosave ────────────────────────────────────────────────────────
@@ -2099,21 +2153,13 @@ function loadSamples() {
     banner.style.display = 'none';
   }
 
-  // Assign one color per unique cohort
-  const cohorts = [...new Set(samples.map(s => s.cohort).filter(Boolean))].sort();
-  cohorts.forEach((c, i) => {
-    cohortColorMap[c] = SAMPLE_COLORS[i % SAMPLE_COLORS.length];
-  });
-
-  // Map each sample to its cohort color (grey if no cohort)
-  samples.forEach(s => {
-    sampleColorMap[s.tiu_id] = s.cohort ? cohortColorMap[s.cohort] : NO_COHORT_COLOR;
-  });
+  assignCohortColors();
 
   // Build cohort filter dropdown
   const sel = document.getElementById('cohortFilter');
   sel.innerHTML = '<option value="">All cohorts</option>' +
-    cohorts.map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
+    Object.keys(cohortColorMap).sort()
+      .map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
 
   // Build sample_type filter dropdown — use known types + any from data
   const knownTypes = ['serum', 'plasma', 'CSF', 'mAb', 'control', 'assay control'];
@@ -2276,6 +2322,7 @@ function buildCohortLegend() {
   legend.innerHTML = cohorts.map(c => `
     <div style="display:flex;align-items:center;gap:7px;">
       <span style="width:10px;height:10px;border-radius:50%;background:${cohortColorMap[c]};flex-shrink:0;display:inline-block;"></span>
+      ${colourSafeMode ? `<span style="font-size:11px;color:${cohortColorMap[c]};">${cohortGlyphMap[c] || ''}</span>` : ''}
       <span style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(c)}</span>
     </div>`).join('') +
     (hasNoCohort ? `
@@ -2286,9 +2333,23 @@ function buildCohortLegend() {
 }
 
 // ─── Sample List ─────────────────────────────────────────────────────────────
+// Typing re-filters and re-renders the whole list, which is cheap at 200 samples
+// and not at 2000. A short debounce means a word typed at speed costs one render
+// rather than one per keystroke.
+let sampleSearchTimer = null;
+const SAMPLE_SEARCH_DEBOUNCE_MS = 150;
+
 function filterSamples() {
-  const q = document.getElementById('sampleSearch').value.toLowerCase();
-  renderSampleList(q);
+  clearTimeout(sampleSearchTimer);
+  sampleSearchTimer = setTimeout(() => {
+    renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  }, SAMPLE_SEARCH_DEBOUNCE_MS);
+}
+
+// Used by tests and by anything that needs the list up to date right now
+function filterSamplesNow() {
+  clearTimeout(sampleSearchTimer);
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
 }
 
 function getAssignedTiuIds() {
@@ -2302,6 +2363,23 @@ function getAssignedTiuIds() {
 }
 
 // Controls/mAbs can be placed on multiple plates — never hide them from the list
+// One cohort, one colour and — in colour-safe mode — one glyph, assigned in a
+// stable order so a design looks the same every time it is opened.
+function assignCohortColors() {
+  const palette = paletteInUse();
+  const cohorts = [...new Set(samples.map(s => s.cohort).filter(Boolean))].sort();
+  cohortColorMap = {};
+  cohortGlyphMap = {};
+  cohorts.forEach((c, i) => {
+    cohortColorMap[c] = palette[i % palette.length];
+    cohortGlyphMap[c] = COHORT_GLYPHS[i % COHORT_GLYPHS.length];
+  });
+  sampleColorMap = {};
+  samples.forEach(s => {
+    sampleColorMap[s.tiu_id] = s.cohort ? cohortColorMap[s.cohort] : NO_COHORT_COLOR;
+  });
+}
+
 function isSampleAvailable(s, assignedTiuIds) {
   if (isAnyControl(s) || isBridged(s)) return true; // may go on several plates
   return !assignedTiuIds.has(s.tiu_id);
@@ -2342,47 +2420,87 @@ function renderSampleList(filter = '') {
     return;
   }
 
-  container.innerHTML = visible.map(s => {
-    const color = sampleColorMap[s.tiu_id] || '#6b7494';
-    const isActive = activeSample && activeSample.tiu_id === s.tiu_id;
-    const isDup = duplicateIds.has(s.input_id + '|||' + s.sample_type);
-    const placed = assignedTiuIds.has(s.tiu_id);
-    // Controls were silently always-available, which made repeating one across
-    // plates possible but invisible. They now carry the same ↻ marker, shown as
-    // permanently on, so the behaviour is stated rather than implied.
-    const alwaysBridged = isAnyControl(s) || isRepeating(s);
-    const canBridge = !alwaysBridged;
-    const isCtrl = isAnyControl(s);
-    const rep = isBridged(s);
-    const assignedOnPlates = (isCtrl || rep) ? getPlateNumsFor(s.input_id) : [];
-    const plateTag = assignedOnPlates.length > 0
-      ? `<span style="font-size:9px;color:#8a6a00;margin-left:auto;">on P${assignedOnPlates.join(',')}</span>`
-      : (rep ? `<span style="font-size:9px;color:var(--accent3);margin-left:auto;">↻ bridging</span>` : '');
-    // Identifiers come from a spreadsheet a human filled in, so they can contain
-    // quotes and angle brackets. Every field is escaped, and the click handlers
-    // are delegated off data attributes rather than interpolated into onclick,
-    // where a stray apostrophe would break the attribute.
-    return `<div class="sample-item ${isActive ? 'active' : ''}" data-tiu="${escHtml(s.tiu_id)}"
-      style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}${placed && !rep ? 'opacity:0.62;' : ''}">
-      ${canBridge
-        ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}" data-bridge="${escHtml(s.tiu_id)}"
-             title="${isManualBridge(s) ? 'Bridging on — stays in the pool for other plates. Click to turn off.' : 'Bridge this sample: keep it in the pool so it can go on more plates.'}">↻</button>`
-        : `<button class="bridge-btn on fixed"
-             title="${isAnyControl(s) ? 'Controls always stay in the pool — place this on as many plates as you need, or use the All plates button.' : 'Bridging is set by the repeat_across_plates column in the manifest.'}">↻</button>`}
-      <div style="display:flex;align-items:center;gap:6px;">
-        <span class="swatch" style="background:${color}; border-radius:50%;"></span>
-        <span class="input-id">${s.input_id ? escHtml(s.input_id) : '<em style="color:var(--muted)">No input_id</em>'}</span>
-        ${isDup ? `<span style="font-size:9px;color:#ffb84f;margin-left:auto;letter-spacing:0.05em;">⚠ DUP</span>` : plateTag}
-      </div>
-      <div class="tiu-id">${escHtml(s.tiu_id)}${s.subject_id ? ` · ${escHtml(s.subject_id)}` : ''}</div>
-      <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap;">
-        ${s.cohort ? `<div style="font-size:9px;color:var(--muted);">${escHtml(s.cohort)}</div>` : ''}
-        ${s.sample_type ? `<div style="font-size:9px;color:#fff;background:var(--accent3);border-radius:3px;padding:1px 5px;font-family:'DM Mono',monospace;">${escHtml(s.sample_type)}</div>` : ''}
-        ${s.diagnosis ? `<div style="font-size:9px;color:var(--muted);font-style:italic;">${escHtml(s.diagnosis)}</div>` : ''}
-      </div>
-    </div>`;
-  }).join('');
+  // A picker, not a data grid: someone searches to narrow down rather than
+  // scrolling two thousand rows, so the list renders in chunks and grows as it
+  // is scrolled. Two thousand samples used to put eight thousand nodes in the
+  // DOM before anyone had done anything.
+  sampleListState = { visible, assignedTiuIds, shown: 0 };
+  container.innerHTML = '';
+  appendSampleChunk();
+  attachSampleListHandlers(container);
+}
 
+const SAMPLE_LIST_CHUNK = 250;
+let sampleListState = null;
+
+function appendSampleChunk() {
+  const container = document.getElementById('sampleList');
+  const st = sampleListState;
+  if (!container || !st) return;
+  const next = st.visible.slice(st.shown, st.shown + SAMPLE_LIST_CHUNK);
+  if (!next.length) return;
+  const more = container.querySelector('.sample-more');
+  if (more) more.remove();
+  container.insertAdjacentHTML('beforeend', next.map(s => sampleItemHtml(s, st.assignedTiuIds)).join(''));
+  st.shown += next.length;
+  if (st.shown < st.visible.length) {
+    container.insertAdjacentHTML('beforeend',
+      `<div class="sample-more" style="padding:8px;text-align:center;font-size:10px;color:var(--muted);">
+         showing ${st.shown} of ${st.visible.length} — scroll for more, or search to narrow it down
+       </div>`);
+  }
+}
+
+function sampleItemHtml(s, assignedTiuIds) {
+  const color = sampleColorMap[s.tiu_id] || '#6b7494';
+  const isActive = activeSample && activeSample.tiu_id === s.tiu_id;
+  const isDup = duplicateIds.has(s.input_id + '|||' + s.sample_type);
+  const placed = assignedTiuIds.has(s.tiu_id);
+  // Controls were silently always-available, which made repeating one across
+  // plates possible but invisible. They now carry the same ↻ marker, shown as
+  // permanently on, so the behaviour is stated rather than implied.
+  const alwaysBridged = isAnyControl(s) || isRepeating(s);
+  const canBridge = !alwaysBridged;
+  const isCtrl = isAnyControl(s);
+  const rep = isBridged(s);
+  const assignedOnPlates = (isCtrl || rep) ? getPlateNumsFor(s.input_id) : [];
+  const plateTag = assignedOnPlates.length > 0
+    ? `<span style="font-size:9px;color:#8a6a00;margin-left:auto;">on P${assignedOnPlates.join(',')}</span>`
+    : (rep ? `<span style="font-size:9px;color:var(--accent3);margin-left:auto;">↻ bridging</span>` : '');
+  // Identifiers come from a spreadsheet a human filled in, so they can contain
+  // quotes and angle brackets. Every field is escaped, and the click handlers
+  // are delegated off data attributes rather than interpolated into onclick,
+  // where a stray apostrophe would break the attribute.
+  return `<div class="sample-item ${isActive ? 'active' : ''}" data-tiu="${escHtml(s.tiu_id)}"
+    style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}${placed && !rep ? 'opacity:0.62;' : ''}">
+    ${canBridge
+      ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}" data-bridge="${escHtml(s.tiu_id)}"
+           title="${isManualBridge(s) ? 'Bridging on — stays in the pool for other plates. Click to turn off.' : 'Bridge this sample: keep it in the pool so it can go on more plates.'}">↻</button>`
+      : `<button class="bridge-btn on fixed"
+           title="${isAnyControl(s) ? 'Controls always stay in the pool — place this on as many plates as you need, or use the All plates button.' : 'Bridging is set by the repeat_across_plates column in the manifest.'}">↻</button>`}
+    <div style="display:flex;align-items:center;gap:6px;">
+      <span class="swatch" style="background:${color}; border-radius:50%;"></span>
+      <span class="input-id">${s.input_id ? escHtml(s.input_id) : '<em style="color:var(--muted)">No input_id</em>'}</span>
+      ${isDup ? `<span style="font-size:9px;color:#ffb84f;margin-left:auto;letter-spacing:0.05em;">⚠ DUP</span>` : plateTag}
+    </div>
+    <div class="tiu-id">${escHtml(s.tiu_id)}${s.subject_id ? ` · ${escHtml(s.subject_id)}` : ''}</div>
+    <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap;">
+      ${s.cohort ? `<div style="font-size:9px;color:var(--muted);">${escHtml(s.cohort)}</div>` : ''}
+      ${s.sample_type ? `<div style="font-size:9px;color:#fff;background:var(--accent3);border-radius:3px;padding:1px 5px;font-family:'DM Mono',monospace;">${escHtml(s.sample_type)}</div>` : ''}
+      ${s.diagnosis ? `<div style="font-size:9px;color:var(--muted);font-style:italic;">${escHtml(s.diagnosis)}</div>` : ''}
+    </div>
+  </div>`;
+}
+
+function attachSampleListHandlers(container) {
+  if (!container.dataset.scrollBound) {
+    container.dataset.scrollBound = '1';
+    container.addEventListener('scroll', () => {
+      if (container.scrollTop + container.clientHeight > container.scrollHeight - 240) {
+        appendSampleChunk();
+      }
+    });
+  }
   if (!container.dataset.delegated) {
     container.dataset.delegated = '1';
     container.addEventListener('click', ev => {
@@ -2666,6 +2784,10 @@ function isAutofillable(sample) {
 
 function renderPlate() {
   const grid = document.getElementById('plateGrid');
+  if (grid) {
+    grid.setAttribute('role', 'grid');
+    grid.setAttribute('aria-label', `Plate ${currentPlate} of ${totalPlates}`);
+  }
   const assignments = plateAssignments[currentPlate] || {};
   grid.innerHTML = '';
   document.getElementById('plateLabel').textContent = `Plate ${currentPlate} / ${totalPlates}`;
@@ -2710,6 +2832,14 @@ function renderPlate() {
       if (assigned) cls += isCtrlAssigned ? ' assigned control-assigned' : ' assigned';
       div.className = cls;
       div.dataset.well = key;
+      // The plate is a grid of controls, not decoration: it can be reached and
+      // driven from the keyboard, and read aloud. One well holds the tab stop
+      // (a roving tabindex) so tabbing does not walk through 96 of them.
+      div.setAttribute('role', 'gridcell');
+      div.tabIndex = (key === focusedWell) ? 0 : -1;
+      div.setAttribute('aria-selected', isSelected ? 'true' : 'false');
+      div.setAttribute('aria-label',
+        `${key}${assigned ? ' — ' + assigned.input_id : locked ? ' — reserved for controls' : ' — empty'}`);
 
       if (assigned) {
         const isCtrl = assignedSampleObj && (isAnyControl(assignedSampleObj) || isBridged(assignedSampleObj));
@@ -2727,7 +2857,8 @@ function renderPlate() {
 
         const lab = document.createElement('span');
         lab.className = 'well-label';
-        lab.textContent = short;
+        const glyph = glyphFor(assignedSampleObj);
+        lab.textContent = glyph ? `${glyph} ${short}` : short;
         div.appendChild(lab);
 
         const meta = [];
@@ -2766,6 +2897,11 @@ function renderPlate() {
         if (dragging) applyDragTo(key);
       });
       div.addEventListener('mouseleave', hideTooltip);
+      div.addEventListener('focus', () => { focusedWell = key; showTooltip(
+        { clientX: div.getBoundingClientRect().right, clientY: div.getBoundingClientRect().bottom },
+        key, assigned, locked); });
+      div.addEventListener('blur', hideTooltip);
+      bindTouchDrag(div, key, assigned, locked);
       if (assigned || locked) div.style.cursor = locked ? 'not-allowed' : 'default';
 
       grid.appendChild(div);
@@ -2832,6 +2968,91 @@ function applyDragTo(key) {
     el.classList.toggle('selected', selectedWells.has(el.dataset.well));
   });
   updateSelectionBanner();
+}
+
+// ── Keyboard and touch ───────────────────────────────────────────────────────
+let focusedWell = 'A1';
+
+function focusWell(key, opts) {
+  if (!key) return;
+  focusedWell = key;
+  const el = document.querySelector(`.well[data-well="${key}"]`);
+  if (!el) return;
+  document.querySelectorAll('.well[data-well]').forEach(w => { w.tabIndex = -1; });
+  el.tabIndex = 0;
+  if (!opts || opts.focus !== false) el.focus({ preventScroll: false });
+}
+
+function moveFocus(dRow, dCol) {
+  const r = ROWS.indexOf(focusedWell[0]), c = parseInt(focusedWell.slice(1), 10);
+  const nr = Math.min(ROWS.length - 1, Math.max(0, r + dRow));
+  const nc = Math.min(COLS.length, Math.max(1, c + dCol));
+  focusWell(`${ROWS[nr]}${nc}`);
+}
+
+// Arrows move, space selects, enter assigns — the same three things the mouse
+// does, so the plate does not need a mouse.
+document.addEventListener('keydown', e => {
+  const grid = document.getElementById('plateGrid');
+  if (!grid || !grid.contains(document.activeElement)) return;
+  const tag = (document.activeElement.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+  const key = document.activeElement.dataset && document.activeElement.dataset.well;
+  if (key) focusedWell = key;
+
+  switch (e.key) {
+    case 'ArrowUp':    e.preventDefault(); moveFocus(-1, 0); return;
+    case 'ArrowDown':  e.preventDefault(); moveFocus(1, 0); return;
+    case 'ArrowLeft':  e.preventDefault(); moveFocus(0, -1); return;
+    case 'ArrowRight': e.preventDefault(); moveFocus(0, 1); return;
+    case 'Home':       e.preventDefault(); focusWell(focusedWell[0] + '1'); return;
+    case 'End':        e.preventDefault(); focusWell(focusedWell[0] + COLS.length); return;
+    case ' ':
+    case 'Spacebar':
+      e.preventDefault();
+      if (!wellSelectable(focusedWell)) return;
+      if (selectedWells.has(focusedWell)) selectedWells.delete(focusedWell);
+      else selectedWells.add(focusedWell);
+      renderPlate();
+      focusWell(focusedWell);
+      return;
+    case 'Enter':
+      e.preventDefault();
+      if (plateAssignments[currentPlate] && plateAssignments[currentPlate][focusedWell]) {
+        openWellEditor(currentPlate, focusedWell);
+      } else if (selectedWells.size) {
+        assignSelected();
+      }
+      return;
+    case 'Escape':
+      if (selectedWells.size) { e.preventDefault(); clearSelection(); }
+      return;
+  }
+});
+
+// Touch: a tablet is common at a bench, and touchmove fires only on the element
+// the touch started in, so the well under the finger has to be looked up.
+function bindTouchDrag(div, key, assigned, locked) {
+  div.addEventListener('touchstart', e => {
+    if (assigned || locked) return;
+    e.preventDefault();
+    startDrag(key);
+  }, { passive: false });
+  div.addEventListener('touchmove', e => {
+    if (!dragging) return;
+    e.preventDefault();
+    const t = e.touches[0];
+    if (!t) return;
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    const over = el && el.closest ? el.closest('.well[data-well]') : null;
+    if (over) applyDragTo(over.dataset.well);
+  }, { passive: false });
+  div.addEventListener('touchend', () => {
+    if (!dragging) return;
+    dragging = false; dragAnchor = null; dragBase = null;
+    renderPlate();
+  });
 }
 
 function startDrag(key) {
@@ -4554,8 +4775,22 @@ function showTooltip(e, key, assigned, locked) {
     t.innerHTML = `<strong>${key}</strong> — empty`;
   }
   t.style.display = 'block';
-  t.style.left = (e.clientX + 12) + 'px';
-  t.style.top = (e.clientY + 12) + 'px';
+  placeTooltip(t, e.clientX, e.clientY);
+}
+
+// Positioned off raw clientX/clientY, the tooltip ran off the right edge on the
+// last column and off the bottom on row H — exactly the wells someone is most
+// likely to be checking. It flips to the other side of the cursor rather than
+// being clipped.
+function placeTooltip(t, x, y) {
+  const pad = 12;
+  const w = t.offsetWidth || 160, h = t.offsetHeight || 28;
+  const vw = window.innerWidth || 1024, vh = window.innerHeight || 768;
+  let left = x + pad, top = y + pad;
+  if (left + w > vw - 4) left = Math.max(4, x - pad - w);
+  if (top + h > vh - 4) top = Math.max(4, y - pad - h);
+  t.style.left = left + 'px';
+  t.style.top = top + 'px';
 }
 
 function hideTooltip() {
@@ -4564,10 +4799,7 @@ function hideTooltip() {
 
 document.addEventListener('mousemove', e => {
   const t = document.getElementById('tooltip');
-  if (t.style.display === 'block') {
-    t.style.left = (e.clientX + 12) + 'px';
-    t.style.top = (e.clientY + 12) + 'px';
-  }
+  if (t.style.display === 'block') placeTooltip(t, e.clientX, e.clientY);
 });
 
 // ─── Index kits ──────────────────────────────────────────────────────────────
