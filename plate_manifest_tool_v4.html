@@ -98,7 +98,11 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   .upload-zone h3 { font-size: 14px; color: var(--text); margin-bottom: 6px; font-weight: 600; }
   .upload-zone p { font-size: 12px; color: var(--muted); }
 
-  input[type="file"] { display: none; }
+  /* File inputs are driven by a styled button that clicks them, so the native
+     control is never shown. Scoped by id rather than by type: as a blanket rule
+     this silently hid every file input added later, including the index kit
+     picker, which then looked like a dropdown with nothing in it. */
+  #fileInput, #indexFile { display: none; }
 
   /* Main layout */
   .main-layout {
@@ -1363,12 +1367,16 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
       <div>
         <label style="font-size:10px;">Index kit workbook</label><br>
-        <input type="file" id="indexFile" accept=".xlsx,.xls" onchange="handleIndexFile(event)"
-               style="font-size:11px;max-width:230px;">
+        <button class="btn btn-ghost" style="padding:5px 12px;font-size:11px;"
+                onclick="document.getElementById('indexFile').click()">📂 Choose workbook…</button>
+        <input type="file" id="indexFile" accept=".xlsx,.xls" onchange="handleIndexFile(event)">
+        <div id="indexFileName" style="font-size:10px;color:var(--muted);margin-top:3px;">no workbook chosen</div>
       </div>
       <div>
         <label for="indexSheet" style="font-size:10px;">Sheet</label>
-        <select id="indexSheet" style="width:210px;" onchange="chooseIndexSheet(this.value)"></select>
+        <select id="indexSheet" style="width:210px;" onchange="chooseIndexSheet(this.value)">
+          <option value="">— choose a workbook first —</option>
+        </select>
       </div>
       <div id="indexKitInfo" style="font-size:11px;color:var(--muted);flex:1;min-width:200px;"></div>
     </div>
@@ -1531,7 +1539,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'afba7b1';
+const DESIGNER_BUILD = 'd4e68d9';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -5056,20 +5064,34 @@ function handleIndexFile(e) {
   const file = e.target.files[0];
   if (!file) return;
   const reader = new FileReader();
+  document.getElementById('indexFileName').textContent = 'reading ' + file.name + '…';
   reader.onload = ev => {
     try {
       indexWorkbook = XLSX.read(ev.target.result, { type: 'array' });
     } catch (err) {
+      document.getElementById('indexFileName').textContent = 'could not read ' + file.name;
       alert('That file could not be read as a workbook (' + err.message + ').');
       return;
     }
+    document.getElementById('indexFileName').textContent = file.name;
     const cands = indexSheetCandidates(indexWorkbook);
+    const others = indexWorkbook.SheetNames.filter(n => !cands.includes(n));
     const sel = document.getElementById('indexSheet');
-    sel.innerHTML = cands.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
+    // Sheets that parse are offered first, but every sheet is listed: a kit with
+    // an unusual layout should be forceable rather than unreachable.
+    sel.innerHTML =
+      (cands.length ? `<optgroup label="index tables">` +
+        cands.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('') +
+        `</optgroup>` : '') +
+      (others.length ? `<optgroup label="other sheets">` +
+        others.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('') +
+        `</optgroup>` : '');
     if (!cands.length) {
       document.getElementById('indexKitInfo').innerHTML =
-        `<span style="color:#b84040;">No index table found in that workbook. ` +
-        `Expected a sheet with a well position column and an i7 index column.</span>`;
+        `<span style="color:#b84040;">No index table found in <strong>${escHtml(file.name)}</strong>.</span> ` +
+        `A sheet needs a well position column and an i7 index column. ` +
+        `Sheets found: ${escHtml(indexWorkbook.SheetNames.join(', '))}. ` +
+        `Pick one above to see why it did not parse.`;
       return;
     }
     // A vendor workbook holds several kits; prefer the one with the most pairs,
@@ -5086,7 +5108,9 @@ function chooseIndexSheet(name) {
   if (!indexWorkbook || !name) return;
   const kit = parseIndexSheet(indexWorkbook, name);
   if (kit.error) {
-    document.getElementById('indexKitInfo').innerHTML = `<span style="color:#b84040;">${escHtml(kit.error)}</span>`;
+    document.getElementById('indexKitInfo').innerHTML =
+      `<span style="color:#b84040;">${escHtml(kit.error)}</span>`;
+    document.getElementById('applyIndexBtn').disabled = true;
     return;
   }
   indexKit = kit;
@@ -5130,7 +5154,9 @@ function previewIndexPlan() {
   if (!box) return;
   showIndexKitInfo();
   if (!indexKit) {
-    box.innerHTML = '<span style="color:var(--muted)">Load an index kit to begin.</span>';
+    box.innerHTML = '<span style="color:var(--muted)">No index kit loaded yet — ' +
+      'choose the kit\'s workbook above (for IDT xGen, the master index list) and ' +
+      'the sheet will be picked for you.</span>';
     btn.disabled = true;
     return;
   }
@@ -5254,8 +5280,10 @@ function loadStoredIndexKit() {
       hint.textContent = 'Plates are used in order — the first set is 1–8, the second 9–16.';
     }
     const sel = document.getElementById('indexSheet');
-    if (indexKit && sel && !sel.options.length) {
+    if (indexKit && sel) {
       sel.innerHTML = `<option value="${escHtml(indexKit.sheet)}">${escHtml(indexKit.sheet)}</option>`;
+      const nameBox = document.getElementById('indexFileName');
+      if (nameBox) nameBox.textContent = 'remembered from a previous session';
     }
     showIndexKitInfo();
   });
