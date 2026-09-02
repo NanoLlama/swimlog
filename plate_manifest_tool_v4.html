@@ -1075,6 +1075,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
             <button id="unlockBtn" onclick="toggleAreaUnlock()">🔓 Unlock</button>
           </div>
           <div class="divider"></div>
+          <button class="btn btn-ghost" style="font-size:12px;" onclick="openControlModal()">🧪 Control Template</button>
           <button class="btn btn-ghost" style="font-size:12px;" onclick="openAutofillModal()">⚡ Autofill Plates</button>
         </div>
 
@@ -1268,6 +1269,47 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <button class="btn btn-ghost" onclick="closeAutofillModal()">Cancel</button>
       <button class="btn btn-ghost" onclick="previewAutofill()">Preview</button>
       <button class="btn btn-primary" id="applyAutofillBtn" onclick="applyAutofill()" disabled>Apply</button>
+    </div>
+  </div>
+</div>
+
+<div class="autofill-modal-overlay hidden" id="controlOverlay">
+  <div class="autofill-modal" style="max-width:820px;">
+    <h2>🧪 Control template</h2>
+    <p style="margin-bottom:8px;">
+      The control area is the same on every plate and is laid out by hand every run.
+      Pick the controls and how many wells each takes; the template is stamped into
+      each plate's reserved area in this order.
+    </p>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
+      <div>
+        <label for="ctlTemplateName" style="font-size:10px;">Template name</label>
+        <input type="text" id="ctlTemplateName" placeholder="e.g. standard 16" style="width:170px;">
+      </div>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:11px;" onclick="saveControlTemplate()">Save</button>
+      <div>
+        <label for="ctlSavedTemplates" style="font-size:10px;">Saved</label>
+        <select id="ctlSavedTemplates" style="width:180px;" onchange="loadControlTemplate(this.value)"></select>
+      </div>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:11px;" onclick="deleteControlTemplate()">Delete</button>
+      <button class="btn btn-ghost" style="padding:4px 12px;font-size:11px;" onclick="captureControlTemplate()"
+              title="Read the current plate's control area back into the template">Capture from this plate</button>
+    </div>
+    <div id="ctlBody" style="max-height:40vh;overflow:auto;margin:6px 0;"></div>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+      <label class="toggle-wrap" style="margin:0;">
+        <input type="checkbox" id="ctlRotate" onchange="renderControlTemplate()">
+        <span>Rotate the position per plate (seeded) so control identity is not confounded with well</span>
+      </label>
+      <div>
+        <label for="ctlSeed" style="font-size:10px;">Rotation seed</label>
+        <input type="text" id="ctlSeed" value="20260710" style="width:110px;" oninput="renderControlTemplate()">
+      </div>
+    </div>
+    <div id="ctlFit" style="margin-top:8px;font-size:11px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeControlModal()">Cancel</button>
+      <button class="btn btn-primary" id="ctlApplyBtn" onclick="applyControlTemplate()">Apply to all plates</button>
     </div>
   </div>
 </div>
@@ -1622,6 +1664,8 @@ function resetDesigner() {
   volumeResolution = {};
   volumeFlagged = [];
   volumePreflightShown = false;
+  controlTemplate = [];
+  appliedControlTemplate = null;
   sourceBytes = null;
   manualBridge = new Set();
   plateReserved = {};
@@ -1674,6 +1718,8 @@ function processFile(file) {
     volumeResolution = {};
     volumeFlagged = [];
     volumePreflightShown = false;
+    controlTemplate = [];
+    appliedControlTemplate = null;
     manualBridge = new Set();
     plateAssignments = {};
     plateReserved = {};
@@ -4209,6 +4255,294 @@ document.addEventListener('mousemove', e => {
   }
 });
 
+// ─── Control templates ───────────────────────────────────────────────────────
+// Controls are never auto-filled, so the reserved area was laid out by hand on
+// every plate — roughly sixteen wells × eight plates of identical pipetting,
+// repeated each run. A template does it once.
+//
+// Positions are not hardcoded: the lab's control set changes run to run and so
+// does where it sits, so the template is an ordered list and the wells come
+// from whatever the plate's reserved area happens to be. Rotation shifts the
+// starting point per plate, so a given control is not measured in the same
+// physical well on every plate — otherwise control identity and well position
+// are perfectly confounded.
+let controlTemplate = [];        // [{ tiu_id, replicates }] in stamping order
+let appliedControlTemplate = null;
+
+// The reserved area's chunks, in the same order autofill would use, so a
+// template lands on whole replicate pairs rather than straddling them.
+function reservedChunks(plateNum, replicates, layout) {
+  const slots = getSampleSlots(layout || 'pair-down');
+  const reserved = reservedOn(plateNum);
+  const chunks = [];
+  for (let i = 0; i + replicates <= slots.length; i += replicates) {
+    const c = slots.slice(i, i + replicates);
+    if (c.every(k => reserved.has(k))) chunks.push(c);
+  }
+  return chunks;
+}
+
+// Where each entry lands on one plate, or a reason it cannot.
+function planControlTemplate(plateNum, template, rotate, seed) {
+  const layout = (document.getElementById('replicateLayout') || {}).value || 'pair-down';
+  const perEntry = [];
+  let need = 0;
+  template.forEach(e => { need += Math.max(1, e.replicates || 1); });
+
+  // Chunks are sized by the largest entry so a 2-well control always gets a
+  // whole pair; 1-well entries simply use the first well of theirs.
+  const size = template.reduce((mx, e) => Math.max(mx, e.replicates || 1), 1);
+  const chunks = reservedChunks(plateNum, size, layout);
+  if (!chunks.length) return { ok: false, reason: `plate ${plateNum} has no reserved area`, wells: [] };
+  if (template.length > chunks.length) {
+    return { ok: false, wells: [],
+      reason: `plate ${plateNum} has room for ${chunks.length} control(s), the template needs ${template.length}` };
+  }
+
+  const offset = rotate ? Math.floor(makeRng(hashSeed(`${seed}|ctl|${plateNum}`))() * chunks.length) : 0;
+  template.forEach((e, i) => {
+    const chunk = chunks[(i + offset) % chunks.length];
+    perEntry.push({ tiu_id: e.tiu_id, wells: chunk.slice(0, Math.max(1, e.replicates || 1)) });
+  });
+  return { ok: true, entries: perEntry, offset, chunks: chunks.length, need };
+}
+
+function openControlModal() {
+  if (!samples.length) { alert('Load a manifest first.'); return; }
+  if (!controlTemplate.length) {
+    // Start from whatever controls the manifest has, unselected, so the dialog
+    // is never an empty box someone has to guess at.
+    controlTemplate = samples.filter(isAnyControl).map(s => ({ tiu_id: s.tiu_id, replicates: 0 }));
+  }
+  refreshSavedTemplateList();
+  renderControlTemplate();
+  document.getElementById('controlOverlay').classList.remove('hidden');
+}
+
+function closeControlModal() {
+  document.getElementById('controlOverlay').classList.add('hidden');
+}
+
+function renderControlTemplate() {
+  const rotate = document.getElementById('ctlRotate').checked;
+  const seed = document.getElementById('ctlSeed').value;
+  const chosen = controlTemplate.filter(e => e.replicates > 0);
+
+  document.getElementById('ctlBody').innerHTML = `
+    <table class="balance-table" style="width:100%;">
+      <tr><th>Control</th><th>Type</th><th>Wells</th><th>Order</th></tr>
+      ${controlTemplate.map((e, i) => {
+        const s = byTiu[e.tiu_id] || {};
+        const pos = chosen.findIndex(c => c.tiu_id === e.tiu_id);
+        return `<tr${e.replicates > 0 ? '' : ' style="opacity:.5;"'}>
+          <td>${escHtml(s.input_id || e.tiu_id)}<div style="font-size:9px;color:var(--muted);">${escHtml(e.tiu_id)}</div></td>
+          <td>${escHtml(s.sample_type || '—')}</td>
+          <td>
+            <select style="font-size:11px;" onchange="setControlEntry(${i}, this.value)">
+              <option value="0"${e.replicates === 0 ? ' selected' : ''}>not used</option>
+              <option value="1"${e.replicates === 1 ? ' selected' : ''}>1 well</option>
+              <option value="2"${e.replicates === 2 ? ' selected' : ''}>2 wells</option>
+              <option value="3"${e.replicates === 3 ? ' selected' : ''}>3 wells</option>
+              <option value="4"${e.replicates === 4 ? ' selected' : ''}>4 wells</option>
+            </select>
+          </td>
+          <td style="text-align:right;">
+            ${e.replicates > 0 ? `${pos + 1}
+              <button class="btn btn-ghost" style="padding:0 6px;font-size:10px;" onclick="moveControlEntry(${i},-1)">▲</button>
+              <button class="btn btn-ghost" style="padding:0 6px;font-size:10px;" onclick="moveControlEntry(${i},1)">▼</button>` : '—'}
+          </td>
+        </tr>`;
+      }).join('')}
+    </table>`;
+
+  // Fit is checked against every plate, not just the one on screen: control
+  // areas can differ per plate, and a template that fits plate 1 and not
+  // plate 6 is the failure this check exists to catch.
+  const fit = document.getElementById('ctlFit');
+  const apply = document.getElementById('ctlApplyBtn');
+  if (!chosen.length) {
+    fit.innerHTML = '<span style="color:var(--muted);">Choose at least one control.</span>';
+    apply.disabled = true;
+    return;
+  }
+  // Every plate is checked, but a reason repeated eight times reads as noise —
+  // say it once and name how many plates it applies to.
+  const byReason = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    const r = planControlTemplate(p, chosen, rotate, seed);
+    if (!r.ok) {
+      const generic = r.reason.replace(/^plate \d+/, 'a plate');
+      (byReason[generic] = byReason[generic] || []).push(p);
+    }
+  }
+  const problems = Object.entries(byReason).map(([reason, ps]) =>
+    ps.length === totalPlates ? `every plate ${reason.replace(/^a plate /, '')}`
+                              : `${reason.replace(/^a plate/, `plate(s) ${ps.join(', ')}`)}`);
+  const missing = chosen.filter(e => !byTiu[e.tiu_id]).map(e => e.tiu_id);
+  if (missing.length) problems.push(`not in this manifest: ${missing.join(', ')}`);
+
+  apply.disabled = problems.length > 0;
+  const wells = chosen.reduce((a, e) => a + e.replicates, 0);
+  fit.innerHTML = problems.length
+    ? `<span style="color:#b84040;font-weight:600;">✕ Cannot apply.</span> ${escHtml(problems.join(' · '))}`
+    : `<span style="color:#2d7d46;font-weight:600;">✓ Fits every plate.</span> ` +
+      `${chosen.length} control(s), ${wells} well(s) per plate, ${wells * totalPlates} in total` +
+      (rotate ? ', rotated per plate' : '');
+}
+
+function setControlEntry(i, value) {
+  if (!controlTemplate[i]) return;
+  controlTemplate[i].replicates = parseInt(value, 10) || 0;
+  renderControlTemplate();
+}
+
+function moveControlEntry(i, dir) {
+  const j = i + dir;
+  if (j < 0 || j >= controlTemplate.length) return;
+  const t = controlTemplate[i];
+  controlTemplate[i] = controlTemplate[j];
+  controlTemplate[j] = t;
+  renderControlTemplate();
+}
+
+// Read a plate someone has already laid out by hand back into a template —
+// the fastest way to capture what the lab actually does.
+function captureControlTemplate() {
+  const reserved = reservedOn(currentPlate);
+  const assigned = plateAssignments[currentPlate] || {};
+  const layout = (document.getElementById('replicateLayout') || {}).value || 'pair-down';
+  const order = getSampleSlots(layout).filter(w => reserved.has(w));
+  const counts = {}, seen = [];
+  order.forEach(w => {
+    const a = assigned[w];
+    if (!a) return;
+    if (!(a.tiu_id in counts)) { counts[a.tiu_id] = 0; seen.push(a.tiu_id); }
+    counts[a.tiu_id]++;
+  });
+  if (!seen.length) {
+    alert(`Plate ${currentPlate}'s control area is empty — nothing to capture.`);
+    return;
+  }
+  const rest = samples.filter(isAnyControl).map(s => s.tiu_id).filter(t => !seen.includes(t));
+  controlTemplate = seen.map(t => ({ tiu_id: t, replicates: counts[t] }))
+    .concat(rest.map(t => ({ tiu_id: t, replicates: 0 })));
+  renderControlTemplate();
+}
+
+function applyControlTemplate() {
+  const rotate = document.getElementById('ctlRotate').checked;
+  const seed = document.getElementById('ctlSeed').value;
+  const chosen = controlTemplate.filter(e => e.replicates > 0);
+  if (!chosen.length) return;
+
+  // Refuse the whole operation rather than half-stamping the run
+  const plans = [];
+  for (let p = 1; p <= totalPlates; p++) {
+    const r = planControlTemplate(p, chosen, rotate, seed);
+    if (!r.ok) { alert(`Template not applied — ${r.reason}.`); return; }
+    plans.push({ plate: p, plan: r });
+  }
+  const occupied = [];
+  plans.forEach(({ plate, plan }) => plan.entries.forEach(e => e.wells.forEach(w => {
+    if (plateAssignments[plate] && plateAssignments[plate][w]) occupied.push(`P${plate} ${w}`);
+  })));
+  if (occupied.length &&
+      !confirm(`${occupied.length} control-area well(s) already hold something and will be ` +
+               `overwritten:\n\n${occupied.slice(0, 12).join(', ')}` +
+               `${occupied.length > 12 ? ', …' : ''}\n\nContinue?`)) return;
+
+  pushUndo('apply control template');
+  plans.forEach(({ plate, plan }) => {
+    let n = 0;
+    plan.entries.forEach(e => {
+      const src = byTiu[e.tiu_id] || {};
+      e.wells.forEach(w => {
+        plateAssignments[plate] = plateAssignments[plate] || {};
+        plateAssignments[plate][w] = { input_id: src.input_id || e.tiu_id, tiu_id: e.tiu_id };
+        n++;
+      });
+    });
+    // One row per plate, as the operation reads at the bench: "plate 3's
+    // controls were stamped", not sixteen separate assignments.
+    mutate('controls_stamped', { plate, count: n,
+      note: `${chosen.length} control(s) into ${n} well(s)` +
+            (rotate ? ` (rotation offset ${plan.offset})` : '') });
+  });
+
+  appliedControlTemplate = { entries: chosen.map(e => Object.assign({}, e)), rotate, seed };
+  closeControlModal();
+  renderPlate();
+  renderSampleList();
+  updateStats();
+}
+
+// Saved templates live alongside the session autosave: same store, own key,
+// same silent failure when storage is unavailable.
+const CONTROL_TEMPLATE_KEY = 'control_templates';
+
+function readSavedTemplates() {
+  return sessionTx('readonly', st => st.get(CONTROL_TEMPLATE_KEY))
+    .then(v => v || {}).catch(() => ({}));
+}
+
+function refreshSavedTemplateList() {
+  readSavedTemplates().then(all => {
+    const sel = document.getElementById('ctlSavedTemplates');
+    if (!sel) return;
+    const names = Object.keys(all).sort();
+    sel.innerHTML = '<option value="">— saved templates —</option>' +
+      names.map(n => `<option value="${escHtml(n)}">${escHtml(n)}</option>`).join('');
+  });
+}
+
+function saveControlTemplate() {
+  const name = (document.getElementById('ctlTemplateName').value || '').trim();
+  if (!name) { alert('Give the template a name first.'); return; }
+  const chosen = controlTemplate.filter(e => e.replicates > 0);
+  if (!chosen.length) { alert('Choose at least one control first.'); return; }
+  readSavedTemplates().then(all => {
+    all[name] = {
+      entries: chosen.map(e => Object.assign({}, e)),
+      rotate: document.getElementById('ctlRotate').checked,
+      seed: document.getElementById('ctlSeed').value,
+      saved_at: new Date().toISOString()
+    };
+    return sessionTx('readwrite', st => st.put(all, CONTROL_TEMPLATE_KEY));
+  }).then(refreshSavedTemplateList)
+    .catch(() => alert('The template could not be saved — browser storage is unavailable.'));
+}
+
+function loadControlTemplate(name) {
+  if (!name) return;
+  readSavedTemplates().then(all => {
+    const t = all[name];
+    if (!t) return;
+    const known = t.entries.filter(e => byTiu[e.tiu_id]);
+    const lost = t.entries.length - known.length;
+    const rest = samples.filter(isAnyControl).map(s => s.tiu_id)
+      .filter(x => !known.some(e => e.tiu_id === x));
+    controlTemplate = known.concat(rest.map(x => ({ tiu_id: x, replicates: 0 })));
+    document.getElementById('ctlTemplateName').value = name;
+    document.getElementById('ctlRotate').checked = !!t.rotate;
+    if (t.seed) document.getElementById('ctlSeed').value = t.seed;
+    renderControlTemplate();
+    if (lost) {
+      alert(`${lost} control(s) in "${name}" are not in this manifest and were dropped ` +
+            `from the template. Check the list before applying.`);
+    }
+  });
+}
+
+function deleteControlTemplate() {
+  const name = document.getElementById('ctlSavedTemplates').value;
+  if (!name) { alert('Pick a saved template to delete.'); return; }
+  if (!confirm(`Delete the saved template "${name}"?`)) return;
+  readSavedTemplates().then(all => {
+    delete all[name];
+    return sessionTx('readwrite', st => st.put(all, CONTROL_TEMPLATE_KEY));
+  }).then(refreshSavedTemplateList).catch(() => {});
+}
+
 // ─── Volume pre-flight ───────────────────────────────────────────────────────
 // volume_mL was parsed and never used, so a tube with too little in it was only
 // discovered at the bench, after the layout had been printed and the plates
@@ -4843,6 +5177,20 @@ function buildInstanceSheet() {
 // Written only when an autofill plan was actually applied. Captures every
 // parameter needed to regenerate the identical layout, plus the realised
 // group x plate composition — handy for a methods section.
+// Shared by both Design Log shapes — a run where the only thing that happened
+// was stamping the controls deserves the same record as one with a full plan.
+function controlTemplateRows() {
+  if (!appliedControlTemplate || !appliedControlTemplate.entries) return [];
+  const rows = [[], ['Control template'], ['Position', 'Control', 'tiu_id', 'Wells per plate']];
+  appliedControlTemplate.entries.forEach((e, i) => {
+    const src = byTiu[e.tiu_id] || {};
+    rows.push([i + 1, src.input_id || e.tiu_id, e.tiu_id, e.replicates]);
+  });
+  rows.push(['Rotated per plate', appliedControlTemplate.rotate
+    ? `yes — seed ${appliedControlTemplate.seed}` : 'no — same wells on every plate']);
+  return rows;
+}
+
 function buildDesignLogSheet() {
   const m = appliedPlanSummary;
   if (!m) {
@@ -4868,6 +5216,9 @@ function buildDesignLogSheet() {
       if (c.total > 0) rows.push([`Plate ${p}`, c.summary, c.mixed ? 'YES — wells tagged' : 'no',
                                   describeReserved(p) + (plateReserved[p] ? ' (custom)' : '')]);
     }
+    // A control-only session is a real one: stamping the templates and nothing
+    // else still needs to say what was stamped.
+    controlTemplateRows().forEach(r => rows.push(r));
     const ws0 = XLSX.utils.aoa_to_sheet(rows);
     ws0['!cols'] = autoFitColumns(rows, 10, 60);
     return ws0;
@@ -4961,6 +5312,7 @@ function buildDesignLogSheet() {
                  f.source, m.volumeChoices[f.tiu_id] || 'proceed']);
     });
   }
+  controlTemplateRows().forEach(r => rows.push(r));
   if (m.unplaced.length) {
     rows.push([]);
     rows.push(['Unplaced — not enough plate capacity']);
@@ -5050,6 +5402,7 @@ function buildDesignState() {
     dead_volume_uL: deadVolumeUL,
     freeze_thaw_max: freezeThawMax,
     volume_resolution: volumeResolution,
+    control_template: appliedControlTemplate,
     assignments,
     change_log: changeLog
   };
@@ -5104,6 +5457,10 @@ function applyDesignState(st) {
   if (Number.isFinite(st.dead_volume_uL)) deadVolumeUL = st.dead_volume_uL;
   freezeThawMax = Number.isFinite(st.freeze_thaw_max) ? st.freeze_thaw_max : null;
   volumeResolution = Object.assign({}, st.volume_resolution || {});
+  appliedControlTemplate = st.control_template || null;
+  if (appliedControlTemplate && appliedControlTemplate.entries) {
+    controlTemplate = appliedControlTemplate.entries.map(e => Object.assign({}, e));
+  }
   buildVolumeRuleRows();
   appliedPlanSummary = st.applied_plan_meta || null;
   changeLog = (st.change_log || []).map(c => Object.assign({}, c, { prior: true }));
