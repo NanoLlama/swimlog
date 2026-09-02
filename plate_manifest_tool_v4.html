@@ -967,6 +967,16 @@
     </div>
   </header>
 
+  <!-- Offered when a previous session was autosaved (ticket 1.7) -->
+  <div id="sessionRestore" style="display:none;align-items:center;gap:12px;padding:12px 16px;
+       margin-bottom:12px;border:1px solid #9dbdf0;background:#eef4ff;border-radius:8px;font-size:13px;">
+    <span id="sessionRestoreText" style="flex:1;"></span>
+    <button class="btn btn-primary" style="padding:5px 14px;font-size:12px;"
+            onclick="restoreSavedSession()">Restore</button>
+    <button class="btn btn-ghost" style="padding:5px 14px;font-size:12px;"
+            onclick="discardSavedSession()">Discard</button>
+  </div>
+
   <!-- Upload -->
   <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
     <div class="icon">📂</div>
@@ -1304,6 +1314,178 @@ document.addEventListener('DOMContentLoaded', () => {
   if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
 });
 
+// ─── Session autosave ────────────────────────────────────────────────────────
+// A design lives in memory until it is exported, so a stray refresh loses an
+// afternoon's work. Every mutation schedules a save of the whole design state
+// plus the bytes of the source manifest — both are needed, since the samples
+// and the Input Samples sheet are read back out of the original workbook.
+//
+// IndexedDB rather than localStorage: a full eight-plate manifest with its
+// change log runs to hundreds of kilobytes, and localStorage's ~5 MB quota is
+// shared with everything else on the origin. Every path here fails quietly:
+// storage may be disabled, full, or unavailable in a private window, and none
+// of that should stop the tool working.
+const SESSION_DB = 'phipseq_plate_designer';
+const SESSION_STORE = 'sessions';
+const SESSION_KEY = 'current';
+const AUTOSAVE_DEBOUNCE_MS = 2000;
+
+let sourceBytes = null;      // the uploaded .xlsx, kept for autosave
+let autosaveTimer = null;
+let autosaveDisabled = false;
+let pendingRestore = null;   // the saved record offered on the upload screen
+
+function sessionDB() {
+  return new Promise((resolve, reject) => {
+    if (autosaveDisabled || typeof indexedDB === 'undefined') return reject(new Error('no indexedDB'));
+    const req = indexedDB.open(SESSION_DB, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(SESSION_STORE)) db.createObjectStore(SESSION_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error || new Error('indexedDB open failed'));
+    req.onblocked = () => reject(new Error('indexedDB blocked'));
+  });
+}
+
+function sessionTx(mode, fn) {
+  return sessionDB().then(db => new Promise((resolve, reject) => {
+    const tx = db.transaction(SESSION_STORE, mode);
+    const req = fn(tx.objectStore(SESSION_STORE));
+    tx.oncomplete = () => { db.close(); resolve(req && req.result); };
+    tx.onerror = () => { db.close(); reject(tx.error); };
+    tx.onabort = () => { db.close(); reject(tx.error || new Error('aborted')); };
+  }));
+}
+
+// Debounced: a drag-select across forty wells is one save, not forty
+function scheduleAutosave() {
+  if (autosaveDisabled || !workbook || !sourceBytes) return;
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(saveSessionNow, AUTOSAVE_DEBOUNCE_MS);
+}
+
+function saveSessionNow() {
+  if (autosaveDisabled || !workbook || !sourceBytes) return Promise.resolve(false);
+  let record;
+  try {
+    record = {
+      saved_at: new Date().toISOString(),
+      file_name: originalFileName,
+      designer_version: DESIGNER_VERSION,
+      source_bytes: sourceBytes,
+      state: buildDesignState()
+    };
+  } catch (e) { return Promise.resolve(false); }
+  return sessionTx('readwrite', st => st.put(record, SESSION_KEY))
+    .then(() => true)
+    .catch(() => {
+      // Quota exceeded, private-window restrictions, a corrupted store: stop
+      // trying rather than throwing on every keystroke.
+      autosaveDisabled = true;
+      return false;
+    });
+}
+
+function clearSavedSession() {
+  pendingRestore = null;
+  const banner = document.getElementById('sessionRestore');
+  if (banner) banner.style.display = 'none';
+  clearTimeout(autosaveTimer);
+  return sessionTx('readwrite', st => st.delete(SESSION_KEY)).catch(() => false);
+}
+
+function readSavedSession() {
+  return sessionTx('readonly', st => st.get(SESSION_KEY)).catch(() => null);
+}
+
+// Offer, never impose: reloading with a saved session must not hijack someone
+// who came back to start a different manifest.
+function offerSessionRestore() {
+  return readSavedSession().then(rec => {
+    if (!rec || !rec.source_bytes || !rec.state) return false;
+    const wells = Object.values(rec.state.assignments || {})
+      .reduce((a, w) => a + Object.keys(w).length, 0);
+    if (!wells && !(rec.state.change_log || []).length) return false;   // nothing worth restoring
+    pendingRestore = rec;
+    const banner = document.getElementById('sessionRestore');
+    if (!banner) return false;
+    document.getElementById('sessionRestoreText').innerHTML =
+      `↻ <strong>Unsaved session found.</strong> ` +
+      `<strong>${escHtml(rec.file_name || 'manifest')}</strong> — ` +
+      `${wells} assigned well(s), last edited ${escHtml(formatSavedAt(rec.saved_at))}.`;
+    banner.style.display = 'flex';
+    return true;
+  });
+}
+
+function formatSavedAt(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return 'earlier';
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} minute(s) ago`;
+  if (mins < 60 * 24) return `${Math.round(mins / 60)} hour(s) ago`;
+  return d.toLocaleString();
+}
+
+function restoreSavedSession() {
+  const rec = pendingRestore;
+  if (!rec) return;
+  document.getElementById('sessionRestore').style.display = 'none';
+  try {
+    workbook = XLSX.read(rec.source_bytes, { type: 'array' });
+  } catch (e) {
+    alert('The saved session could not be re-read (' + e.message + '). Upload the manifest again.');
+    clearSavedSession();
+    return;
+  }
+  sourceBytes = rec.source_bytes;
+  originalFileName = rec.file_name || 'manifest';
+  changeLog = [];
+  restoredFrom = null;
+  instanceIds = {};
+  manualBridge = new Set();
+  plateAssignments = {};
+  plateReserved = {};
+  areaUnlocked = {};
+  appliedPlanSummary = null;
+  appliedPlanMeta = null;
+  undoStack = [];
+  updateUndoButton();
+
+  loadSamples();
+  if (samples.length === 0) { clearSavedSession(); return; }
+  detectPlates();
+  const restored = applyDesignState(rec.state);
+  if (restored < 0) { clearSavedSession(); return; }
+  restoredFrom = 'autosaved session';
+  inferBridgingFromLayout();
+  renderPlate();
+  renderSampleList();
+  buildAssignSelect();
+  updateStats();
+
+  document.getElementById('mainUI').classList.remove('hidden');
+  uploadZone.style.display = 'none';
+  document.getElementById('fileName').textContent = originalFileName;
+  const banner = document.getElementById('restoredBanner');
+  banner.style.display = 'flex';
+  banner.style.background = '#eef4ff';
+  banner.style.borderColor = '#9dbdf0';
+  banner.innerHTML = `<span>↻ Session recovered — <strong>${restored}</strong> well(s) restored ` +
+    `from an autosave taken ${escHtml(formatSavedAt(rec.saved_at))}. ` +
+    `<strong>This design has not been exported.</strong> Export it when you are done.</span>`;
+}
+
+function discardSavedSession() {
+  if (!confirm('Discard the autosaved session? This cannot be undone.')) return;
+  clearSavedSession();
+}
+
+document.addEventListener('DOMContentLoaded', () => { offerSessionRestore(); });
+
 // ─── File Upload ─────────────────────────────────────────────────────────────
 const uploadZone = document.getElementById('uploadZone');
 
@@ -1324,8 +1506,9 @@ function handleFile(e) {
   if (file) processFile(file);
 }
 
-// Clear everything and go back to the upload screen. Nothing here is saved
-// anywhere, so the confirmation spells out exactly what would be lost.
+// Clear everything and go back to the upload screen. This is the one action
+// that also drops the autosave, so the confirmation spells out what goes with
+// it — after this there is no copy of the design anywhere but an export.
 function resetDesigner() {
   const wells = Object.values(plateAssignments)
     .reduce((a, w) => a + Object.keys(w).length, 0);
@@ -1335,9 +1518,11 @@ function resetDesigner() {
     const lines = ['Clear this design and start from a new manifest?', ''];
     if (wells) lines.push(`• ${wells} assigned well(s) will be discarded`);
     if (edits) lines.push(`• ${edits} unexported edit(s) will be lost`);
+    lines.push('• the autosaved copy of this session will be deleted');
     lines.push('', 'Export first if you want to keep this design.');
     if (!confirm(lines.join('\n'))) return;
   }
+  clearSavedSession();
 
   workbook = null;
   samples = [];
@@ -1356,6 +1541,7 @@ function resetDesigner() {
   restoredFrom = null;
   editingWell = null;
   instanceIds = {};
+  sourceBytes = null;
   manualBridge = new Set();
   plateReserved = {};
   areaUnlocked = {};
@@ -1396,6 +1582,10 @@ function processFile(file) {
   const reader = new FileReader();
   reader.onload = e => {
     workbook = XLSX.read(e.target.result, { type: 'array' });
+    sourceBytes = e.target.result;   // kept so the session can be autosaved
+    pendingRestore = null;
+    const offer = document.getElementById('sessionRestore');
+    if (offer) offer.style.display = 'none';
     changeLog = [];
     restoredFrom = null;
     instanceIds = {};
@@ -1461,6 +1651,7 @@ function processFile(file) {
     } else {
       banner.style.display = 'none';
     }
+    scheduleAutosave();
   };
   reader.readAsArrayBuffer(file);
 }
@@ -3486,6 +3677,7 @@ document.addEventListener('keydown', e => {
 //          bridge_on, bridge_off, control_area_changed, replaced, note
 function mutate(action, payload) {
   logChange(Object.assign({ action }, payload));
+  scheduleAutosave();
 }
 
 function logChange(entry) {
