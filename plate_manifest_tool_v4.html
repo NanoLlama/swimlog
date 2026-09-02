@@ -1083,7 +1083,11 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
             <button onclick="changePlate(-1)">◀</button>
             <span id="plateLabel">Plate 1</span>
             <button onclick="changePlate(1)">▶</button>
+            <button onclick="addPlates(1)" title="Add a plate to the run">＋</button>
+            <button onclick="removeCurrentPlate()" id="removePlateBtn"
+                    title="Remove this plate — only possible while it is empty">－</button>
           </div>
+          <div id="plateNeed" style="font-size:11px;color:var(--muted);"></div>
           <div class="quick-select">
             <span>Select:</span>
             <button onclick="selectAll()">All</button>
@@ -2775,6 +2779,117 @@ function clearPlate() {
   }
 }
 
+// How many plates this manifest actually needs, at the options currently set.
+// Counted in replicate chunks against a plate's usable area, so the control
+// area and any every-plate bridge are paid for before samples are.
+function estimatePlatesNeeded() {
+  const el = id => document.getElementById(id);
+  const reps = parseInt((el('replicateCount') || {}).value, 10) || 2;
+  const eligible = samples.filter(isAutofillable);
+  const bridges = eligible.filter(s => isRepeating(s) || isManualBridge(s));
+  const ordinary = eligible.length - bridges.length;
+
+  // A fresh plate's control area is the default one; existing plates keep theirs.
+  const chunksOn = p => {
+    const reserved = (p <= totalPlates ? reservedOn(p) : defaultReservedSet()).size;
+    return Math.floor((96 - reserved) / reps);
+  };
+  // Every-plate bridges cost one chunk on every plate they run on
+  const everyPlate = bridges.filter(s => {
+    const spec = repeatSpec(s);
+    return spec === 'all' || isManualBridge(s);
+  }).length;
+
+  let need = 0, room = 0;                    // room counted in replicate chunks
+  while (room < ordinary && need < 200) {
+    need++;
+    room += Math.max(0, chunksOn(need) - everyPlate);
+  }
+  return {
+    need: Math.max(1, need),
+    ordinary,
+    bridges: bridges.length,
+    perPlate: Math.max(0, chunksOn(totalPlates || 1) - everyPlate),
+    replicates: reps
+  };
+}
+
+// Subjects are dealt whole, so the estimate is a floor rather than a promise;
+// the line says as much rather than implying a guarantee it cannot make.
+function updatePlateNeed() {
+  const box = document.getElementById('plateNeed');
+  if (!box) return;
+  if (!samples.length) { box.textContent = ''; return; }
+  const e = estimatePlatesNeeded();
+  const short = e.need - totalPlates;
+  box.innerHTML = short > 0
+    ? `<span style="color:#b84040;font-weight:600;">Needs about ${e.need} plate(s)</span> — ` +
+      `${e.ordinary} sample(s) at ${e.replicates} replicate(s), ~${e.perPlate} per plate. ` +
+      `<button class="btn btn-ghost" style="padding:1px 8px;font-size:10px;" ` +
+      `onclick="addPlates(${short})">＋ Add ${short}</button>`
+    : `Needs about ${e.need} of ${totalPlates} plate(s) — ${e.ordinary} sample(s) at ` +
+      `${e.replicates} replicate(s), ~${e.perPlate} per plate.`;
+}
+
+function addPlates(n) {
+  const count = Math.max(1, parseInt(n, 10) || 1);
+  pushUndo(count === 1 ? 'add plate' : `add ${count} plates`);
+  const from = totalPlates + 1;
+  totalPlates += count;
+  for (let p = 1; p <= totalPlates; p++) if (!plateAssignments[p]) plateAssignments[p] = {};
+  mutate('plates_added', { plate: `${from}–${totalPlates}`, count,
+    note: `run grew from ${from - 1} to ${totalPlates} plate(s)` });
+  document.getElementById('plateCount').textContent = totalPlates;
+  document.getElementById('totalWells').textContent = totalPlates * 96;
+  currentPlate = from;
+  selectedWells.clear();
+  renderPlate();
+  updateStats();
+  updatePlateNeed();
+}
+
+function removeCurrentPlate() { removePlate(currentPlate); }
+
+function removePlate(p) {
+  if (totalPlates <= 1) { alert('A run needs at least one plate.'); return; }
+  const held = Object.keys(plateAssignments[p] || {}).length;
+  if (held) {
+    alert(`Plate ${p} holds ${held} assigned well(s).\n\nClear the plate first — removing it ` +
+          `would renumber the plates after it and silently move those samples.`);
+    return;
+  }
+  // Removing anything but the last plate renumbers the ones after it, which
+  // rewrites the plate half of every instance uid already issued for them.
+  const affected = Object.keys(instanceIds).filter(k => Number(k.split('|')[1]) > p);
+  if (p < totalPlates) {
+    const lines = [`Remove plate ${p} and renumber plates ${p + 1}–${totalPlates} down by one?`];
+    if (affected.length) {
+      lines.push('', `⚠ ${affected.length} instance id(s) have already been exported for those ` +
+        `plates. Renumbering changes which plate they name, so anything already barcoded ` +
+        `against them will no longer match.`);
+    }
+    if (!confirm(lines.join('\n'))) return;
+  }
+  pushUndo(`remove plate ${p}`);
+  for (let q = p; q < totalPlates; q++) {
+    plateAssignments[q] = plateAssignments[q + 1] || {};
+    if (plateReserved[q + 1]) plateReserved[q] = plateReserved[q + 1]; else delete plateReserved[q];
+    if (areaUnlocked[q + 1]) areaUnlocked[q] = true; else delete areaUnlocked[q];
+  }
+  delete plateAssignments[totalPlates];
+  delete plateReserved[totalPlates];
+  delete areaUnlocked[totalPlates];
+  totalPlates--;
+  mutate('plate_removed', { plate: p, note: `run shrank to ${totalPlates} plate(s)` });
+  document.getElementById('plateCount').textContent = totalPlates;
+  document.getElementById('totalWells').textContent = totalPlates * 96;
+  currentPlate = Math.min(currentPlate, totalPlates);
+  selectedWells.clear();
+  renderPlate();
+  updateStats();
+  updatePlateNeed();
+}
+
 function changePlate(dir) {
   currentPlate = Math.max(1, Math.min(totalPlates, currentPlate + dir));
   selectedWells.clear();
@@ -3461,6 +3576,13 @@ function onLayoutModeChange() {
     : 'Groups are packed into contiguous plate blocks (v3 behaviour).';
 }
 
+// Offered straight from the preview: adding plates and re-planning in one step,
+// since the answer to "not enough plates" is nearly always "then use more".
+function addPlatesAndReplan(n) {
+  addPlates(n);
+  previewAutofill();
+}
+
 function autofillOptionChanged() {
   onWellOrderChange();
   autofillPlan = null;
@@ -3569,7 +3691,12 @@ function previewAutofill() {
   const notes = [];
   if (res.unplaced.length) {
     const n = res.unplaced.reduce((a, u) => a + u.samples.length, 0);
-    notes.push(`<span class="warn">⚠ ${n} sample(s) could not be placed — not enough plates. Add plates to the Lab Plate Maps sheet or reduce the selection.</span>`);
+    const e = estimatePlatesNeeded();
+    const short = Math.max(1, e.need - totalPlates);
+    notes.push(`<span class="warn">⚠ ${n} sample(s) could not be placed — the run needs about ` +
+      `${e.need} plate(s) and has ${totalPlates}.</span> ` +
+      `<button class="btn btn-primary" style="padding:2px 10px;font-size:11px;" ` +
+      `onclick="addPlatesAndReplan(${short})">＋ Add ${short} plate(s) and re-run</button>`);
   }
   if (opts.mode === 'dither' && opts.windowSize > res.effectiveWindow) {
     notes.push(`ℹ Dither window reduced to ${res.effectiveWindow} — the run only needs ${res.effectiveWindow} plate(s) at this sample count.`);
@@ -3745,6 +3872,15 @@ function updateStats() {
   let total = 0;
   for (const p of Object.values(plateAssignments)) total += Object.keys(p).length;
   document.getElementById('totalAssigned').textContent = total;
+  updatePlateNeed();
+  const rm = document.getElementById('removePlateBtn');
+  if (rm) {
+    const held = Object.keys(plateAssignments[currentPlate] || {}).length;
+    rm.disabled = totalPlates <= 1 || held > 0;
+    rm.title = held ? `Plate ${currentPlate} holds ${held} well(s) — clear it first`
+                    : (totalPlates <= 1 ? 'A run needs at least one plate'
+                                        : `Remove plate ${currentPlate}`);
+  }
 }
 
 // ─── Well editor ──────────────────────────────────────────────────────────────
@@ -3819,7 +3955,8 @@ function snapshotState() {
     plateReserved: Object.fromEntries(
       Object.entries(plateReserved).map(([k, v]) => [k, [...v]])),
     areaUnlocked: Object.assign({}, areaUnlocked),
-    manualBridge: [...manualBridge]
+    manualBridge: [...manualBridge],
+    totalPlates                       // adding or removing a plate is undoable too
   };
 }
 
@@ -3829,6 +3966,12 @@ function restoreState(snap) {
     Object.entries(snap.plateReserved).map(([k, v]) => [k, new Set(v)]));
   areaUnlocked = Object.assign({}, snap.areaUnlocked);
   manualBridge = new Set(snap.manualBridge);
+  if (snap.totalPlates) {
+    totalPlates = snap.totalPlates;
+    currentPlate = Math.min(currentPlate, totalPlates);
+    document.getElementById('plateCount').textContent = totalPlates;
+    document.getElementById('totalWells').textContent = totalPlates * 96;
+  }
 }
 
 // Called immediately before a mutation, with a label naming what is about to
