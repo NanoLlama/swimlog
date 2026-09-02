@@ -1102,6 +1102,12 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
             <button class="btn btn-ghost" onclick="openValidation()"
                     title="Check the whole design against the rules the bench relies on">✓ Validate layout</button>
             <button class="btn btn-ghost" onclick="clearPlate()">Clear Plate</button>
+            <button class="btn btn-ghost" onclick="downloadWellMapCsv()"
+                    title="One row per well, empties included — for analysis code">⬇ Well map CSV</button>
+            <button class="btn btn-ghost" onclick="downloadWorklistCsv()"
+                    title="Cherry-pick transfers, one row per well — needs source_rack and source_position in the manifest">⬇ Worklist CSV</button>
+            <button class="btn btn-ghost" onclick="downloadTecanGwl()"
+                    title="Tecan .gwl for the Fluent — same transfers in the instrument's own format">⬇ Tecan .gwl</button>
             <button class="btn btn-primary" onclick="downloadExcel()">⬇ Export Excel</button>
           </div>
         </div>
@@ -1296,6 +1302,40 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   </div>
 </div>
 
+<div class="autofill-modal-overlay hidden" id="gwlOverlay">
+  <div class="autofill-modal" style="max-width:600px;">
+    <h2>⬇ Tecan worklist</h2>
+    <p style="margin-bottom:8px;">
+      A .gwl names labware by the labels on the worktable, which only this lab knows.
+      These are remembered for next time.
+    </p>
+    <div class="dither-controls" style="grid-template-columns:1fr 1fr;">
+      <div class="dither-field">
+        <label for="gwlSourceType">Source labware type</label>
+        <input type="text" id="gwlSourceType" placeholder="e.g. Tube 2mL">
+      </div>
+      <div class="dither-field">
+        <label for="gwlDestType">Destination labware type</label>
+        <input type="text" id="gwlDestType" placeholder="e.g. PCR 96 well">
+      </div>
+      <div class="dither-field">
+        <label for="gwlDestPrefix">Destination label prefix</label>
+        <input type="text" id="gwlDestPrefix" value="Plate">
+        <span class="hint">Plate 3 becomes <code>Plate3</code> on the worktable.</span>
+      </div>
+      <div class="dither-field">
+        <label for="gwlLiquidClass">Liquid class</label>
+        <input type="text" id="gwlLiquidClass" placeholder="e.g. Serum">
+      </div>
+    </div>
+    <div id="gwlSummary" style="font-size:11px;color:var(--muted);margin-top:8px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="document.getElementById('gwlOverlay').classList.add('hidden')">Cancel</button>
+      <button class="btn btn-primary" onclick="writeTecanGwl()">Download .gwl</button>
+    </div>
+  </div>
+</div>
+
 <div class="autofill-modal-overlay hidden" id="indexOverlay">
   <div class="autofill-modal" style="max-width:880px;">
     <h2>🧬 Index assignment</h2>
@@ -1471,7 +1511,11 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
 // ─── Version ─────────────────────────────────────────────────────────────────
 // Surfaced in the UI badge and written to the Design Log so a reader can tell
 // which build produced a layout. Bump on any release that changes behaviour.
-const DESIGNER_VERSION = '4.2.0';
+const DESIGNER_VERSION = '4.3.0';
+// Replaced with the commit the file was built from by tools/build.js. A version
+// number says which release; this says which code, which is what someone
+// re-running a design a year later actually needs.
+const DESIGNER_BUILD = 'debb471';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -1902,7 +1946,8 @@ function loadSamples() {
   const colIdx = {};
   const EXPECTED_COLS = [
     'tiu_id', 'input_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
-    'subject_ethnicity', 'sample_type', 'volume_ml', 'min_volume_required_ml', 'collection_date',
+    'subject_ethnicity', 'sample_type', 'volume_ml', 'min_volume_required_ml',
+    'source_rack', 'source_position', 'collection_date',
     'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
     'dither_group',        // optional — an explicit stratification column
     'repeat_across_plates' // optional — bridging samples run on several plates
@@ -1978,6 +2023,8 @@ function loadSamples() {
       dither_group: getVal(row, 'dither_group'),
       repeat_across_plates: getVal(row, 'repeat_across_plates'),
       min_volume_required_mL: getVal(row, 'min_volume_required_ml'),
+      source_rack: getVal(row, 'source_rack'),
+      source_position: getVal(row, 'source_position'),
       rowIdx: i
     });
   }
@@ -5976,6 +6023,11 @@ function downloadExcel() {
   wb.SheetNames.push('Sample Instances');
   wb.Sheets['Sample Instances'] = buildInstanceSheet();
 
+  // Well Map — one row per well, empties included, for anyone writing analysis
+  // code who would otherwise reshape a grid by hand
+  wb.SheetNames.push('Well Map');
+  wb.Sheets['Well Map'] = buildWellMapSheet();
+
   // Index Assignments — what the sequencing provider needs, one row per library
   const idx = buildIndexSheet();
   if (idx) {
@@ -6188,6 +6240,248 @@ function buildIndexSheet() {
   return ws;
 }
 
+// ─── Tidy long-format well map ───────────────────────────────────────────────
+// Anyone writing analysis code against a plate map has to reshape a grid or
+// parse a wells string first, and every one of them writes that reshaping
+// slightly differently. One row per well, empties included so the plate
+// geometry is explicit rather than implied by absence.
+const WELL_MAP_META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
+                       'sample_type_detail', 'volume_mL', 'collection_date', 'cohort',
+                       'num_freeze_thaws', 'diagnosis', 'dither_group', 'notes'];
+
+function wellMapRows() {
+  const uidOf = {};                 // plate|well -> instance
+  enumerateInstances().forEach(i => i.wells.forEach(w => { uidOf[`${i.plate}|${w}`] = i; }));
+
+  // Which wells hold the same sample on the same plate: the technical
+  // replicate group, named by the well it starts in.
+  const replicateOf = {};
+  enumerateInstances().forEach(i => {
+    const tag = `P${i.plate}:${i.wells[0]}`;
+    i.wells.forEach(w => { replicateOf[`${i.plate}|${w}`] = tag; });
+  });
+
+  const cov = bridgeCoverage();
+  const bridges = new Set();
+  Object.values(cov.perPlate).forEach(list => list.forEach(b => bridges.add(b.tiu_id)));
+
+  const header = ['plate', 'well', 'row', 'col', 'is_empty', 'instance_uid', 'tiu_id', 'input_id',
+                  'is_control', 'is_bridge', 'is_edge', 'replicate_group', 'n_replicates',
+                  'in_control_area', 'pool', 'index_plate', 'index_well',
+                  'i7_sequence', 'i5_sequence', 'i5_orientation', ...WELL_MAP_META];
+  const rows = [header];
+  for (let p = 1; p <= totalPlates; p++) {
+    const reserved = reservedOn(p);
+    ROWS.forEach(r => COLS.forEach(c => {
+      const well = `${r}${c}`;
+      const inst = uidOf[`${p}|${well}`];
+      const smp = inst ? inst.sample : null;
+      const idx = inst ? indexAssignments[inst.uid] : null;
+      const i5 = idx ? (idx.orientation === 'rc' ? (idx.i5_rc || idx.i5_fwd)
+                                                 : (idx.i5_fwd || idx.i5_rc)) : '';
+      rows.push([
+        p, well, r, c,
+        inst ? 'no' : 'yes',
+        inst ? inst.uid : '', inst ? inst.tiu_id : '', inst ? inst.input_id : '',
+        smp ? (isAnyControl(smp) ? 'yes' : 'no') : '',
+        inst ? (bridges.has(inst.tiu_id) ? 'yes' : 'no') : '',
+        isEdgeWell(well) ? 'yes' : 'no',
+        inst ? replicateOf[`${p}|${well}`] : '',
+        inst ? inst.wells.length : '',
+        reserved.has(well) ? 'yes' : 'no',
+        idx ? idx.pool : '', idx ? idx.indexPlate : '', idx ? idx.well : '',
+        idx ? idx.i7 : '', i5,
+        idx ? (idx.orientation === 'rc' ? 'reverse complement' : 'forward') : '',
+        ...WELL_MAP_META.map(k => (smp && smp[k] !== undefined) ? smp[k] : '')
+      ]);
+    }));
+  }
+  return rows;
+}
+
+function buildWellMapSheet() {
+  const rows = wellMapRows();
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = autoFitColumns(rows.slice(0, 200), 6, 26);
+  for (let c = 0; c < rows[0].length; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: 0, c })];
+    if (cell) cell.s = { font: { bold: true }, fill: xlFill('FFF0EDE5'), border: XL_GRID_BORDER };
+  }
+  if (ws['!ref']) ws['!autofilter'] = { ref: ws['!ref'] };
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  return ws;
+}
+
+function toCsv(rows) {
+  return rows.map(r => r.map(v => {
+    const s = v === undefined || v === null ? '' : String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')).join('\r\n');
+}
+
+function downloadCsv(rows, filename) {
+  const blob = new Blob([toCsv(rows)], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadWellMapCsv() {
+  if (!workbook) { alert('No file loaded.'); return; }
+  downloadCsv(wellMapRows(), exportFileName().replace(/\.xlsx$/i, '') + '_well_map.csv');
+}
+
+// ─── Liquid handler worklist ─────────────────────────────────────────────────
+// The design already knows source identity and destination well, which is
+// exactly what a cherry-pick worklist is. Emitting it removes hand-pipetting
+// error rather than merely organising it.
+//
+// Two outputs: a generic long CSV that any instrument's own importer can be
+// pointed at, and a Tecan .gwl for the Fluent, which is the instrument this lab
+// intends to use. The generic file is the one that round-trips — the layout can
+// be rebuilt from it — so it is the record, and the .gwl is a rendering of it.
+function worklistRows() {
+  const rows = [];
+  enumerateInstances().forEach(inst => {
+    const s = inst.sample;
+    const need = volumeRequirement(s, inst.wells.length);
+    // Per well, not per instance: the worklist moves liquid into wells.
+    const perWell = need
+      ? (volumeRules[s.sample_type] && volumeRules[s.sample_type].mode === 'per-well'
+          ? volumeRules[s.sample_type].uL
+          : Math.round((need.uL / inst.wells.length) * 10) / 10)
+      : '';
+    inst.wells.forEach((w, i) => {
+      rows.push({
+        source_rack: s.source_rack || '',
+        source_position: s.source_position || '',
+        dest_plate: inst.plate,
+        dest_well: w,
+        volume_uL: perWell,
+        instance_uid: inst.uid,
+        tiu_id: inst.tiu_id,
+        input_id: inst.input_id,
+        sample_type: s.sample_type || '',
+        replicate: i + 1
+      });
+    });
+  });
+  // Grouped by source rack, then by position within it: a rack is loaded once
+  // and worked through, rather than revisited plate by plate.
+  const rank = v => (v === '' || v === undefined ? '￿' : String(v));
+  rows.sort((a, b) =>
+    rank(a.source_rack).localeCompare(rank(b.source_rack)) ||
+    String(a.source_position).localeCompare(String(b.source_position), undefined, { numeric: true }) ||
+    a.dest_plate - b.dest_plate ||
+    String(a.dest_well).localeCompare(String(b.dest_well), undefined, { numeric: true }));
+  return rows;
+}
+
+const WORKLIST_COLUMNS = ['source_rack', 'source_position', 'dest_plate', 'dest_well',
+                          'volume_uL', 'instance_uid', 'tiu_id', 'input_id',
+                          'sample_type', 'replicate'];
+
+function worklistCsvRows() {
+  return [WORKLIST_COLUMNS].concat(worklistRows().map(r => WORKLIST_COLUMNS.map(c => r[c])));
+}
+
+// Tecan worklist (.gwl): one A(spirate)/D(ispense)/W(ash) triplet per transfer.
+// Fields are semicolon separated and positional — rack label, rack id, rack
+// type, position, tube id, volume, liquid class, tip mask — and blanks are
+// meaningful, so empty fields are kept rather than trimmed.
+function tecanGwl(opts) {
+  const o = opts || {};
+  const destLabel = p => (o.destPrefix || 'Plate') + p;
+  const lines = [];
+  let lastRack = null;
+  worklistRows().forEach(r => {
+    if (!r.source_rack || !r.source_position) return;   // nothing to aspirate from
+    if (r.source_rack !== lastRack) {
+      lines.push(`C;rack ${r.source_rack}`);            // comment: a rack change
+      lastRack = r.source_rack;
+    }
+    const vol = r.volume_uL === '' ? '' : r.volume_uL;
+    lines.push(`A;${r.source_rack};;${o.sourceType || ''};${r.source_position};;${vol};${o.liquidClass || ''};;`);
+    lines.push(`D;${destLabel(r.dest_plate)};;${o.destType || ''};${wellIndex(r.dest_well)};;${vol};${o.liquidClass || ''};;`);
+    lines.push('W;');
+  });
+  return lines.join('\r\n') + '\r\n';
+}
+
+// Tecan numbers a 96-well plate down each column: A1=1, B1=2 … H12=96.
+function wellIndex(well) {
+  const row = ROWS.indexOf(well[0]);
+  const col = parseInt(well.slice(1), 10);
+  return (col - 1) * ROWS.length + row + 1;
+}
+
+function worklistCoverage() {
+  const rows = worklistRows();
+  const missing = rows.filter(r => !r.source_rack || !r.source_position);
+  const noVolume = rows.filter(r => r.volume_uL === '');
+  return { total: rows.length, missing: missing.length, noVolume: noVolume.length,
+           racks: [...new Set(rows.map(r => r.source_rack).filter(Boolean))].sort() };
+}
+
+function downloadWorklistCsv() {
+  if (!workbook) { alert('No file loaded.'); return; }
+  const cov = worklistCoverage();
+  if (!cov.total) { alert('Nothing is placed yet.'); return; }
+  if (cov.missing) {
+    if (!confirm(`${cov.missing} of ${cov.total} transfer(s) have no source rack or position.\n\n` +
+      `Add source_rack and source_position columns to the manifest for a worklist a ` +
+      `robot can run. The CSV still exports, with those fields blank.\n\nContinue?`)) return;
+  }
+  downloadCsv(worklistCsvRows(), exportFileName().replace(/\.xlsx$/i, '') + '_worklist.csv');
+}
+
+function downloadTecanGwl() {
+  if (!workbook) { alert('No file loaded.'); return; }
+  const cov = worklistCoverage();
+  if (cov.missing === cov.total) {
+    alert(`None of the ${cov.total} transfer(s) have a source rack and position, so there is ` +
+          `nothing for the robot to aspirate from.\n\nAdd source_rack and source_position ` +
+          `columns to the manifest.`);
+    return;
+  }
+  try {
+    const saved = JSON.parse(localStorage.getItem('phipseq_gwl') || '{}');
+    ['gwlSourceType', 'gwlDestType', 'gwlDestPrefix', 'gwlLiquidClass'].forEach(id => {
+      if (saved[id] !== undefined && document.getElementById(id)) document.getElementById(id).value = saved[id];
+    });
+  } catch (e) { /* no saved settings is fine */ }
+  document.getElementById('gwlSummary').innerHTML =
+    `${cov.total - cov.missing} transfer(s) across ${cov.racks.length} rack(s)` +
+    (cov.missing ? `. <span style="color:#c4851c;">${cov.missing} have no source and are left out.</span>` : '.') +
+    (cov.noVolume ? ` <span style="color:#c4851c;">${cov.noVolume} have no volume rule.</span>` : '');
+  document.getElementById('gwlOverlay').classList.remove('hidden');
+}
+
+function writeTecanGwl() {
+  const opts = {
+    sourceType: document.getElementById('gwlSourceType').value.trim(),
+    destType: document.getElementById('gwlDestType').value.trim(),
+    destPrefix: document.getElementById('gwlDestPrefix').value.trim() || 'Plate',
+    liquidClass: document.getElementById('gwlLiquidClass').value.trim()
+  };
+  try {
+    localStorage.setItem('phipseq_gwl', JSON.stringify({
+      gwlSourceType: opts.sourceType, gwlDestType: opts.destType,
+      gwlDestPrefix: opts.destPrefix, gwlLiquidClass: opts.liquidClass
+    }));
+  } catch (e) { /* storage off — the fields just start empty next time */ }
+  document.getElementById('gwlOverlay').classList.add('hidden');
+  const text = tecanGwl(opts);
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = exportFileName().replace(/\.xlsx$/i, '') + '.gwl';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 // Written only when an autofill plan was actually applied. Captures every
 // parameter needed to regenerate the identical layout, plus the realised
 // group x plate composition — handy for a methods section.
@@ -6316,8 +6610,12 @@ function buildDesignLogSheet() {
       ['PhIPSeq Plate Designer — Design Log'],
       ['Generated', new Date().toISOString()],
       ['Designer version', DESIGNER_VERSION],
+      ['Designer build', DESIGNER_BUILD],
+      ['State schema version', STATE_SCHEMA_VERSION],
       ['Template user', currentUser() || '(not recorded)'],
       ['Source file', originalFileName],
+      ['Source manifest rows', samples.length],
+      ['Source manifest fingerprint', tiuOrderHash(samples.map(x => x.tiu_id))],
       ['Layout restored from', restoredFrom || '(not restored)'],
       ['Edits this session', changeLog.filter(c => !c.prior).length],
       ['Edits logged in total', changeLog.length],
@@ -6348,8 +6646,15 @@ function buildDesignLogSheet() {
   rows.push(['PhIPSeq Plate Designer — Design Log']);
   rows.push(['Generated', new Date().toISOString()]);
   rows.push(['Designer version', DESIGNER_VERSION]);
+  rows.push(['Designer build', DESIGNER_BUILD]);
+  rows.push(['State schema version', STATE_SCHEMA_VERSION]);
   rows.push(['Template user', currentUser() || '(not recorded)']);
   rows.push(['Source file', originalFileName]);
+  // Together with the seed, this is what lets a reader confirm they are
+  // regenerating from identical inputs with identical code rather than
+  // something that merely looks the same.
+  rows.push(['Source manifest rows', samples.length]);
+  rows.push(['Source manifest fingerprint', tiuOrderHash(samples.map(x => x.tiu_id))]);
   if (restoredFrom) rows.push(['Layout restored from', restoredFrom]);
   rows.push(['Edits this session', changeLog.filter(c => !c.prior).length]);
   rows.push(['Edits logged in total', changeLog.length]);
@@ -6509,6 +6814,7 @@ function buildDesignState() {
   return {
     schema_version: STATE_SCHEMA_VERSION,
     designer_version: DESIGNER_VERSION,
+    designer_build: DESIGNER_BUILD,
     exported_at: new Date().toISOString(),
     exported_by: currentUser() || '',
     source_manifest: {
