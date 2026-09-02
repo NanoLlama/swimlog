@@ -963,7 +963,7 @@
                style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);
                       font-family:'DM Mono',monospace;font-size:11px;padding:4px 9px;width:160px;outline:none;">
       </div>
-      <div class="badge">v4.0</div>
+      <div class="badge" id="versionBadge">v4.0</div>
     </div>
   </header>
 
@@ -1252,6 +1252,12 @@
 <div class="well-tooltip" id="tooltip"></div>
 
 <script>
+// ─── Version ─────────────────────────────────────────────────────────────────
+// Surfaced in the UI badge and written to the Design Log so a reader can tell
+// which build produced a layout. Bump on any release that changes behaviour.
+const DESIGNER_VERSION = '4.1.0';
+const STATE_SCHEMA_VERSION = 1;
+
 // ─── State ───────────────────────────────────────────────────────────────────
 let workbook = null;
 let samples = []; // [{tiu_id, input_id, subject_id, subject_age_yrs, subject_sex, sample_type, volume_mL, cohort, diagnosis, notes, rowIdx}]
@@ -1277,7 +1283,9 @@ const SAMPLE_COLORS = [
   '#5a8a20','#b84070','#1a7a8a','#a06000','#6040c0'
 ];
 const NO_COHORT_COLOR = '#6b7494';
-let sampleColorMap = {};
+let sampleColorMap = {};   // keyed on tiu_id — input_id is not unique
+let byTiu = {};            // tiu_id -> sample, the primary key
+let byInput = {};          // input_id -> [samples], display convenience only
 let cohortColorMap = {}; // cohort string → color
 
 try {
@@ -1287,6 +1295,11 @@ try {
     if (el) el.value = savedUser;
   });
 } catch (e) { /* storage unavailable — the field just starts empty */ }
+
+document.addEventListener('DOMContentLoaded', () => {
+  const badge = document.getElementById('versionBadge');
+  if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
+});
 
 // ─── File Upload ─────────────────────────────────────────────────────────────
 const uploadZone = document.getElementById('uploadZone');
@@ -1333,6 +1346,8 @@ function resetDesigner() {
   originalFileName = 'manifest';
   duplicateIds.clear();
   sampleColorMap = {};
+  byTiu = {};
+  byInput = {};
   cohortColorMap = {};
   changeLog = [];
   restoredFrom = null;
@@ -1457,6 +1472,32 @@ function loadSamples() {
     return String(row[colIdx[col]] || '').trim();
   }
 
+  // tiu_id is the primary key everything else resolves through, so a duplicate
+  // is not recoverable: two rows would be indistinguishable in the plate maps,
+  // the instance sheet and the barcode assignment. Refuse the file rather than
+  // silently attributing wells to whichever row happened to be found first.
+  const seenTiu = {};
+  const dupRows = [];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    if (!row || !row[colIdx['tiu_id']]) continue;
+    const t = String(row[colIdx['tiu_id']] || '').trim();
+    if (!t) continue;
+    if (seenTiu[t] !== undefined) dupRows.push({ tiu_id: t, rows: [seenTiu[t], i + 1] });
+    else seenTiu[t] = i + 1;
+  }
+  if (dupRows.length) {
+    const detail = dupRows.slice(0, 8)
+      .map(d => `  ${d.tiu_id} — spreadsheet rows ${d.rows.join(' and ')}`).join('\n');
+    alert(`Cannot load this manifest: ${dupRows.length} duplicate tiu_id value(s).\n\n` +
+      `tiu_id must be unique — it is the identifier the plate maps, Sample Instances ` +
+      `sheet and barcode assignment all key on.\n\n${detail}` +
+      (dupRows.length > 8 ? `\n  …and ${dupRows.length - 8} more` : '') +
+      `\n\nFix the duplicates and upload again.`);
+    samples = [];
+    return;
+  }
+
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
     if (!row || !row[colIdx['tiu_id']]) continue;
@@ -1482,6 +1523,13 @@ function loadSamples() {
       rowIdx: i
     });
   }
+
+  byTiu = {};
+  byInput = {};
+  samples.forEach(s => {
+    byTiu[s.tiu_id] = s;
+    (byInput[s.input_id] = byInput[s.input_id] || []).push(s);
+  });
 
   // Detect true duplicates: same input_id AND same sample_type
   duplicateIds.clear();
@@ -1518,13 +1566,13 @@ function loadSamples() {
 
   // Map each sample to its cohort color (grey if no cohort)
   samples.forEach(s => {
-    sampleColorMap[s.input_id] = s.cohort ? cohortColorMap[s.cohort] : NO_COHORT_COLOR;
+    sampleColorMap[s.tiu_id] = s.cohort ? cohortColorMap[s.cohort] : NO_COHORT_COLOR;
   });
 
   // Build cohort filter dropdown
   const sel = document.getElementById('cohortFilter');
   sel.innerHTML = '<option value="">All cohorts</option>' +
-    cohorts.map(c => `<option value="${c}">${c}</option>`).join('');
+    cohorts.map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
 
   // Build sample_type filter dropdown — use known types + any from data
   const knownTypes = ['serum', 'plasma', 'CSF', 'mAb', 'control', 'assay control'];
@@ -1532,7 +1580,7 @@ function loadSamples() {
   const allTypes = [...new Set([...knownTypes.filter(t => dataTypes.map(d => d.toLowerCase()).includes(t.toLowerCase())), ...dataTypes])].sort();
   const typeSel = document.getElementById('sampleTypeFilter');
   typeSel.innerHTML = '<option value="">All sample types</option>' +
-    allTypes.map(t => `<option value="${t}">${t}</option>`).join('');
+    allTypes.map(t => `<option value="${escHtml(t)}">${escHtml(t)}</option>`).join('');
 
   document.getElementById('sampleCount').textContent = samples.length;
   buildCohortLegend();
@@ -1547,8 +1595,6 @@ function loadSamples() {
 // existed. Nothing is read from Lab Plate Maps: its cells may carry type tags.
 function restoreAssignments() {
   const nameOf = n => workbook.SheetNames.find(x => x.toLowerCase() === n.toLowerCase());
-  const byTiu = {};
-  samples.forEach(s => { byTiu[s.tiu_id] = s; });
   let restored = 0;
 
   const instName = nameOf('Sample Instances');
@@ -1640,7 +1686,7 @@ function inferBridgingFromLayout() {
   }
   Object.entries(seen).forEach(([tiu, plates]) => {
     if (plates.size > 1) {
-      const s = samples.find(x => x.tiu_id === tiu);
+      const s = byTiu[tiu];
       if (s && !isAnyControl(s) && !isRepeating(s)) manualBridge.add(tiu);
     }
   });
@@ -1684,7 +1730,7 @@ function buildCohortLegend() {
   legend.innerHTML = cohorts.map(c => `
     <div style="display:flex;align-items:center;gap:7px;">
       <span style="width:10px;height:10px;border-radius:50%;background:${cohortColorMap[c]};flex-shrink:0;display:inline-block;"></span>
-      <span style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${c}</span>
+      <span style="font-size:10px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escHtml(c)}</span>
     </div>`).join('') +
     (hasNoCohort ? `
     <div style="display:flex;align-items:center;gap:7px;">
@@ -1751,7 +1797,7 @@ function renderSampleList(filter = '') {
   }
 
   container.innerHTML = visible.map(s => {
-    const color = sampleColorMap[s.input_id] || '#6b7494';
+    const color = sampleColorMap[s.tiu_id] || '#6b7494';
     const isActive = activeSample && activeSample.tiu_id === s.tiu_id;
     const isDup = duplicateIds.has(s.input_id + '|||' + s.sample_type);
     const placed = assignedTiuIds.has(s.tiu_id);
@@ -1766,27 +1812,41 @@ function renderSampleList(filter = '') {
     const plateTag = assignedOnPlates.length > 0
       ? `<span style="font-size:9px;color:#8a6a00;margin-left:auto;">on P${assignedOnPlates.join(',')}</span>`
       : (rep ? `<span style="font-size:9px;color:var(--accent3);margin-left:auto;">↻ bridging</span>` : '');
-    return `<div class="sample-item ${isActive ? 'active' : ''}" onclick="selectSample('${s.tiu_id}')"
+    // Identifiers come from a spreadsheet a human filled in, so they can contain
+    // quotes and angle brackets. Every field is escaped, and the click handlers
+    // are delegated off data attributes rather than interpolated into onclick,
+    // where a stray apostrophe would break the attribute.
+    return `<div class="sample-item ${isActive ? 'active' : ''}" data-tiu="${escHtml(s.tiu_id)}"
       style="${isDup ? 'border-color:rgba(255,184,79,0.6);background:rgba(255,184,79,0.06);' : ''}${placed && !rep ? 'opacity:0.62;' : ''}">
       ${canBridge
-        ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}"
-             onclick="toggleBridge('${s.tiu_id}', event)"
+        ? `<button class="bridge-btn ${isManualBridge(s) ? 'on' : ''}" data-bridge="${escHtml(s.tiu_id)}"
              title="${isManualBridge(s) ? 'Bridging on — stays in the pool for other plates. Click to turn off.' : 'Bridge this sample: keep it in the pool so it can go on more plates.'}">↻</button>`
-        : `<button class="bridge-btn on fixed" onclick="event.stopPropagation()"
+        : `<button class="bridge-btn on fixed"
              title="${isAnyControl(s) ? 'Controls always stay in the pool — place this on as many plates as you need, or use the All plates button.' : 'Bridging is set by the repeat_across_plates column in the manifest.'}">↻</button>`}
       <div style="display:flex;align-items:center;gap:6px;">
         <span class="swatch" style="background:${color}; border-radius:50%;"></span>
-        <span class="input-id">${s.input_id || '<em style="color:var(--muted)">No input_id</em>'}</span>
+        <span class="input-id">${s.input_id ? escHtml(s.input_id) : '<em style="color:var(--muted)">No input_id</em>'}</span>
         ${isDup ? `<span style="font-size:9px;color:#ffb84f;margin-left:auto;letter-spacing:0.05em;">⚠ DUP</span>` : plateTag}
       </div>
-      <div class="tiu-id">${s.tiu_id}${s.subject_id ? ` · ${s.subject_id}` : ''}</div>
+      <div class="tiu-id">${escHtml(s.tiu_id)}${s.subject_id ? ` · ${escHtml(s.subject_id)}` : ''}</div>
       <div style="display:flex;gap:5px;margin-top:2px;flex-wrap:wrap;">
-        ${s.cohort ? `<div style="font-size:9px;color:var(--muted);">${s.cohort}</div>` : ''}
-        ${s.sample_type ? `<div style="font-size:9px;color:#fff;background:var(--accent3);border-radius:3px;padding:1px 5px;font-family:'DM Mono',monospace;">${s.sample_type}</div>` : ''}
-        ${s.diagnosis ? `<div style="font-size:9px;color:var(--muted);font-style:italic;">${s.diagnosis}</div>` : ''}
+        ${s.cohort ? `<div style="font-size:9px;color:var(--muted);">${escHtml(s.cohort)}</div>` : ''}
+        ${s.sample_type ? `<div style="font-size:9px;color:#fff;background:var(--accent3);border-radius:3px;padding:1px 5px;font-family:'DM Mono',monospace;">${escHtml(s.sample_type)}</div>` : ''}
+        ${s.diagnosis ? `<div style="font-size:9px;color:var(--muted);font-style:italic;">${escHtml(s.diagnosis)}</div>` : ''}
       </div>
     </div>`;
   }).join('');
+
+  if (!container.dataset.delegated) {
+    container.dataset.delegated = '1';
+    container.addEventListener('click', ev => {
+      const bridge = ev.target.closest('.bridge-btn[data-bridge]');
+      if (bridge) { toggleBridge(bridge.dataset.bridge, ev); return; }
+      if (ev.target.closest('.bridge-btn')) { ev.stopPropagation(); return; }
+      const card = ev.target.closest('.sample-item[data-tiu]');
+      if (card) selectSample(card.dataset.tiu);
+    });
+  }
 }
 
 function buildAssignSelect() {
@@ -1801,7 +1861,7 @@ function buildAssignSelect() {
     available.map(s => {
       const dup = duplicateIds.has(s.input_id + '|||' + s.sample_type) ? ' ⚠' : '';
       const ctrl = isAnyControl(s) ? ` [${s.sample_type}]` : '';
-      return `<option value="${s.tiu_id}">${s.input_id}${ctrl}${dup} (${s.tiu_id})</option>`;
+      return `<option value="${escHtml(s.tiu_id)}">${escHtml(s.input_id)}${escHtml(ctrl)}${dup} (${escHtml(s.tiu_id)})</option>`;
     }).join('');
   if (activeSample && !isSampleAvailable(activeSample, assignedTiuIds)) {
     activeSample = null;
@@ -1809,7 +1869,7 @@ function buildAssignSelect() {
 }
 
 function selectSample(tiu_id) {
-  activeSample = samples.find(s => s.tiu_id === tiu_id) || null;
+  activeSample = byTiu[tiu_id] || null;
   document.getElementById('assignSelect').value = tiu_id;
   renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
 }
@@ -2013,7 +2073,7 @@ function renderPlate() {
       const assigned = assignments[key];
       const isSelected = selectedWells.has(key);
       const locked = isReserved(currentPlate, key) && !assigned && !areaUnlocked[currentPlate];
-      const assignedSampleObj = assigned ? samples.find(s => s.input_id === assigned.input_id) : null;
+      const assignedSampleObj = assigned ? (byTiu[assigned.tiu_id] || null) : null;
       const isCtrlAssigned = assigned && isAssayControl(assignedSampleObj);
 
       const div = document.createElement('div');
@@ -2026,7 +2086,7 @@ function renderPlate() {
 
       if (assigned) {
         const isCtrl = assignedSampleObj && (isAnyControl(assignedSampleObj) || isBridged(assignedSampleObj));
-        const color = isCtrlAssigned ? '#8a6a00' : (sampleColorMap[assigned.input_id] || '#4fb8ff');
+        const color = isCtrlAssigned ? '#8a6a00' : (sampleColorMap[assigned.tiu_id] || '#4fb8ff');
         div.style.background = hexToRgba(color, isCtrlAssigned ? 0.15 : 0.2);
         div.style.borderColor = color;
         div.style.color = color;
@@ -2215,7 +2275,7 @@ function selectEmpty() {
 // ─── Assignment ───────────────────────────────────────────────────────────────
 function assignSelected() {
   const selVal = document.getElementById('assignSelect').value;
-  const sample = samples.find(s => s.tiu_id === selVal) || activeSample;
+  const sample = byTiu[selVal] || activeSample;
   if (!sample) { alert('Please select a sample first.'); return; }
   if (selectedWells.size === 0) { alert('Please select at least one well.'); return; }
 
@@ -2245,7 +2305,7 @@ function assignSelected() {
 // taken on a plate are left alone, so this is safe to run late in a build.
 function assignSelectedAllPlates() {
   const selVal = document.getElementById('assignSelect').value;
-  const sample = samples.find(s => s.tiu_id === selVal) || activeSample;
+  const sample = byTiu[selVal] || activeSample;
   if (!sample) { alert('Please select a sample first.'); return; }
   if (selectedWells.size === 0) { alert('Please select at least one well.'); return; }
 
@@ -2512,6 +2572,10 @@ function computeAutofillPlan(opts) {
   // rather than dealt like an ordinary sample.
   const autofillable = samples.filter(s => isAutofillable(s));
   const bridging = autofillable.filter(s => isRepeating(s));
+  // Controls and mAbs are never autofilled, so marking one repeat_across_plates
+  // does nothing. That is the sample type most often used as a bridge, so say so
+  // rather than letting it disappear into the generic skipped-types line.
+  const bridgeIgnored = samples.filter(s => isRepeating(s) && !isAutofillable(s));
   const manualHeld = autofillable.filter(s => !isRepeating(s) && isManualBridge(s));
   const eligible = autofillable.filter(s =>
     !isRepeating(s) && !isManualBridge(s) && !assignedTiuIds.has(s.tiu_id)
@@ -2521,7 +2585,10 @@ function computeAutofillPlan(opts) {
       .map(s => s.sample_type || 'unknown')
   )];
 
-  if (eligible.length === 0 && bridging.length === 0) return { empty: true, skippedTypes, manualHeld };
+  if (eligible.length === 0 && bridging.length === 0) {
+    return { empty: true, skippedTypes, manualHeld,
+             bridgeIgnored: samples.filter(s => isRepeating(s) && !isAutofillable(s)) };
+  }
 
   const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField);
 
@@ -2582,13 +2649,26 @@ function computeAutofillPlan(opts) {
     const need = list.reduce((a, u) => a + u.samples.length, 0);
     const targets = apportion(Math.min(need, free), room);
     let i = 0;
+    // Targets are counted in wells but units are placed whole, so a plate can
+    // only land on its target when the target happens to be reachable from the
+    // unit sizes to hand. Two corrections keep that from compounding:
+    //   - carry the miss into the next plate's target (error diffusion), so an
+    //     overshoot here is repaid there instead of pushing every later group
+    //     onto the last plate of the window;
+    //   - stop before a unit that would overshoot by more than leaving it out
+    //     would undershoot, so each plate lands on the nearer side of target.
+    let carry = 0;
     win.forEach((p, k) => {
-      let want = targets[k];
-      while (i < list.length && want > 0 && capacity[p] - used[p] >= list[i].samples.length) {
-        want -= list[i].samples.length;
+      let want = targets[k] - carry;
+      while (i < list.length && capacity[p] - used[p] >= list[i].samples.length) {
+        if (want <= 0) break;
+        const size = list[i].samples.length;
+        if (size - want > want) break;   // overshoot would be worse than undershoot
+        want -= size;
         placeUnit(p, list[i]);
         i++;
       }
+      carry = -want;                     // >0 overshot here, <0 undershot; repaid next plate
     });
     return list.slice(i);
   }
@@ -2796,6 +2876,7 @@ function computeAutofillPlan(opts) {
 
   return {
     empty: false, plan, opts, groupNames, groupUnits, plateUnits, platePool, bridging, manualHeld, stranded,
+    bridgeIgnored,
     platesUsed, capacity, used, unplaced, skippedTypes, windows, effectiveWindow,
     unitCount: units.length,
     sampleCount: eligible.length
@@ -2971,6 +3052,12 @@ function previewAutofill() {
     const detail = strandedList.map(e => `P${e[0]}: ${e[1].join(', ')}`).join(' · ');
     notes.push(`<span class="warn">⚠ ${total} well(s) cannot be auto-filled — their column-pair partner is already taken, and using them would put two different samples in one duplicate pair. Free the partner well, or assign these by hand: ${escHtml(detail)}.</span>`);
   }
+  if (res.bridgeIgnored && res.bridgeIgnored.length) {
+    notes.push(`<span class="warn">⚠ ${res.bridgeIgnored.length} control-type sample(s) are marked ` +
+      `repeat_across_plates but controls are never auto-filled: ` +
+      `${escHtml(res.bridgeIgnored.map(s => s.input_id).join(', '))}. ` +
+      `Place them in the control area and use “All plates”.</span>`);
+  }
   if (res.manualHeld && res.manualHeld.length) {
     notes.push(`↻ ${res.manualHeld.length} sample(s) marked for bridging in the app are left out of autofill — place them by hand: ${escHtml(res.manualHeld.map(s => s.input_id).join(', '))}`);
   }
@@ -3030,14 +3117,22 @@ function updateAssignmentList() {
 
   container.innerHTML = keys.map(k => {
     const a = assignments[k];
-    const color = sampleColorMap[a.input_id] || '#4fb8ff';
+    const color = sampleColorMap[a.tiu_id] || '#4fb8ff';
     return `<div class="assignment-item">
       <span class="swatch" style="background:${color};border-radius:50%;width:7px;height:7px;flex-shrink:0;"></span>
       <span class="well-pos">${k}</span>
-      <span class="assignment-name" title="${a.input_id}">${a.input_id}</span>
-      <button class="clear-well" onclick="clearWell('${k}')" title="Remove">✕</button>
+      <span class="assignment-name" title="${escHtml(a.input_id)}">${escHtml(a.input_id)}</span>
+      <button class="clear-well" data-clear="${escHtml(k)}" title="Remove">✕</button>
     </div>`;
   }).join('');
+
+  if (!container.dataset.delegated) {
+    container.dataset.delegated = '1';
+    container.addEventListener('click', ev => {
+      const btn = ev.target.closest('.clear-well[data-clear]');
+      if (btn) clearWell(btn.dataset.clear);
+    });
+  }
 }
 
 // Share of each cohort placed anywhere in the run — the thing you actually
@@ -3126,7 +3221,7 @@ function openWellEditor(plate, well) {
   const a = (plateAssignments[plate] || {})[well];
   if (!a) return;
   editingWell = { plate, well };
-  const src = samples.find(x => x.tiu_id === a.tiu_id) || {};
+  const src = byTiu[a.tiu_id] || {};
   const mates = wellsOfSampleOnPlate(plate, a.tiu_id);
 
   document.getElementById('weWell').textContent = `${well} · plate ${plate}`;
@@ -3201,7 +3296,7 @@ function applyWellEdit() {
     });
   } else {
     const tiu = document.getElementById('weReplacement').value;
-    const rep = samples.find(x => x.tiu_id === tiu);
+    const rep = byTiu[tiu];
     if (!rep) { alert('Pick a replacement sample first.'); return; }
     targets.forEach(k => {
       const cur = plateAssignments[plate][k];
@@ -3227,7 +3322,7 @@ function showTooltip(e, key, assigned, locked) {
   if (locked) {
     t.innerHTML = `<strong>${key}</strong> — reserved for assay controls`;
   } else if (assigned) {
-    const s = samples.find(x => x.input_id === assigned.input_id);
+    const s = byTiu[assigned.tiu_id];
     let meta = '';
     if (s) {
       const parts = [];
@@ -3306,8 +3401,11 @@ function downloadExcel() {
 // Stamp every export with the minute it was written, so successive revisions
 // of the same design sort by name and never silently overwrite each other.
 function exportFileName() {
+  // Drop a stamp from a previous export. Tolerates the unseparated form too:
+  // filenames lose punctuation when they pass through mail and upload paths,
+  // and a stamp that fails to match would stack instead of being replaced.
   const base = originalFileName
-    .replace(/_\d{8}-\d{4}$/, '')   // drop a stamp from a previous export
+    .replace(/_\d{8}[-_]?\d{4}$/, '')
     .replace(/_filled$/i, '');
   const d = new Date();
   const pad = n => String(n).padStart(2, '0');
@@ -3370,20 +3468,20 @@ function buildInstanceSheet() {
   for (let p = 1; p <= totalPlates; p++) {
     const assignments = plateAssignments[p] || {};
     // group this plate's wells by sample
-    const byTiu = {};
+    const wellsBySample = {};
     Object.entries(assignments).forEach(([well, a]) => {
       const k = a.tiu_id + '|' + a.input_id;
-      if (!byTiu[k]) byTiu[k] = { tiu_id: a.tiu_id, input_id: a.input_id, wells: [] };
-      byTiu[k].wells.push(well);
+      if (!wellsBySample[k]) wellsBySample[k] = { tiu_id: a.tiu_id, input_id: a.input_id, wells: [] };
+      wellsBySample[k].wells.push(well);
     });
 
-    Object.values(byTiu)
+    Object.values(wellsBySample)
       .sort((a, b) => (wellRank[a.wells[0]] ?? 999) - (wellRank[b.wells[0]] ?? 999))
       .forEach(entry => {
         const all = [...(platesOf[entry.input_id] || [p])].sort((a, b) => a - b);
         const repeated = all.length > 1;
         const suffix = repeated ? `-P${p}` : '';
-        const src = samples.find(x => x.tiu_id === entry.tiu_id) || {};
+        const src = byTiu[entry.tiu_id] || {};
         entry.wells.sort((a, b) => (wellRank[a] ?? 999) - (wellRank[b] ?? 999));
         rows.push([
           entry.tiu_id + suffix,
@@ -3422,6 +3520,7 @@ function buildDesignLogSheet() {
     const rows = [
       ['PhIPSeq Plate Designer — Design Log'],
       ['Generated', new Date().toISOString()],
+      ['Designer version', DESIGNER_VERSION],
       ['Template user', currentUser() || '(not recorded)'],
       ['Source file', originalFileName],
       ['Layout restored from', restoredFrom || '(not restored)'],
@@ -3448,6 +3547,7 @@ function buildDesignLogSheet() {
   const rows = [];
   rows.push(['PhIPSeq Plate Designer — Design Log']);
   rows.push(['Generated', new Date().toISOString()]);
+  rows.push(['Designer version', DESIGNER_VERSION]);
   rows.push(['Template user', currentUser() || '(not recorded)']);
   rows.push(['Source file', originalFileName]);
   if (restoredFrom) rows.push(['Layout restored from', restoredFrom]);
@@ -3523,7 +3623,7 @@ function plateComposition(p) {
   const counts = {};
   const prep = new Set();
   Object.values(assignments).forEach(a => {
-    const s = samples.find(x => x.input_id === a.input_id);
+    const s = byTiu[a.tiu_id];
     const t = (s && s.sample_type) || 'unspecified';
     counts[t] = (counts[t] || 0) + 1;
     if (!(s && isAnyControl(s))) prep.add(t);
@@ -3649,7 +3749,7 @@ function buildPlateSheet(field) {
         if (assignment) {
           let val = assignment[field];
           // Append plate suffix for controls on multiple plates
-          const sObj = samples.find(x => x.input_id === assignment.input_id);
+          const sObj = byTiu[assignment.tiu_id];
           if (multiPlate[assignment.input_id] && multiPlate[assignment.input_id].size > 1) {
             val = `${val}-P${p}`;
           }
@@ -3673,7 +3773,7 @@ function buildPlateSheet(field) {
     const used = [...new Set(
       Object.values(plateAssignments)
         .flatMap(w => Object.values(w))
-        .map(a => (samples.find(x => x.input_id === a.input_id) || {}).cohort || '')
+        .map(a => (byTiu[a.tiu_id] || {}).cohort || '')
     )];
     if (used.length) {
       data.push([]);
@@ -3730,7 +3830,7 @@ function buildPlateSheet(field) {
     }
     const base = { border: XL_GRID_BORDER, alignment: { horizontal: 'center', vertical: 'center' } };
     if (!isLab) { cell.s = base; return; }
-    const colour = sampleColorMap[t.input_id] || NO_COHORT_COLOR;
+    const colour = sampleColorMap[t.tiu_id] || NO_COHORT_COLOR;
     cell.s = Object.assign({}, base, {
       fill: xlFill(tintARGB(colour, 0.78)),
       font: { color: { rgb: hexToARGB(colour) }, bold: true, sz: 10 }
