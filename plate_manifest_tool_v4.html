@@ -1065,6 +1065,8 @@
             <button onclick="selectEmpty()">Empty</button>
           </div>
           <div style="display:flex; gap:8px;">
+            <button class="btn btn-ghost" id="undoBtn" onclick="undo()" disabled
+                    title="Nothing to undo">↶ Undo</button>
             <button class="btn btn-ghost" onclick="clearPlate()">Clear Plate</button>
             <button class="btn btn-primary" onclick="downloadExcel()">⬇ Export Excel</button>
           </div>
@@ -1361,6 +1363,8 @@ function resetDesigner() {
   dragging = false;
   dragAnchor = null;
   dragBase = null;
+  undoStack = [];
+  updateUndoButton();
 
   // Back to the upload screen
   document.getElementById('mainUI').classList.add('hidden');
@@ -1934,6 +1938,7 @@ function setReservedFromSelection() {
   const assignments = plateAssignments[currentPlate] || {};
   const clash = [...selectedWells].filter(k => assignments[k]);
   if (clash.length && !confirm(`${clash.length} selected well(s) already hold samples. Reserve anyway? Existing assignments are kept.`)) return;
+  pushUndo(`control area on plate ${currentPlate}`);
   const before = describeReserved(currentPlate);
   plateReserved[currentPlate] = new Set(selectedWells);
   mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
@@ -1946,6 +1951,7 @@ function setReservedFromSelection() {
 function setReservedPreset(kind) {
   const set = new Set();
   if (kind === 'cols1112') DEFAULT_CONTROL_COLS.forEach(c => ROWS.forEach(r => set.add(`${r}${c}`)));
+  pushUndo(`control area on plate ${currentPlate}`);
   const before = describeReserved(currentPlate);
   plateReserved[currentPlate] = set; // 'none' leaves the set empty
   mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
@@ -1955,6 +1961,7 @@ function setReservedPreset(kind) {
 }
 
 function clearReserved() {
+  pushUndo(`control area on plate ${currentPlate}`);
   const before = describeReserved(currentPlate);
   delete plateReserved[currentPlate];
   mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
@@ -1967,6 +1974,7 @@ function clearReserved() {
 // dropped in after the samples are down. The area stays defined, so autofill
 // still leaves it alone.
 function toggleAreaUnlock() {
+  pushUndo(`${areaUnlocked[currentPlate] ? 'lock' : 'unlock'} control area on plate ${currentPlate}`);
   if (areaUnlocked[currentPlate]) delete areaUnlocked[currentPlate];
   else areaUnlocked[currentPlate] = true;
   mutate('control_area_changed', { plate: currentPlate, well: '(control area)',
@@ -2028,6 +2036,7 @@ function isBridged(sample) { return isRepeating(sample) || isManualBridge(sample
 function toggleBridge(tiu_id, ev) {
   if (ev) ev.stopPropagation();
   const src = byTiu[tiu_id] || {};
+  pushUndo(`${manualBridge.has(tiu_id) ? 'un-bridge' : 'bridge'} ${src.input_id || tiu_id}`);
   if (manualBridge.has(tiu_id)) {
     manualBridge.delete(tiu_id);
     mutate('bridge_off', { plate: '(all)', well: '(sample)',
@@ -2301,6 +2310,7 @@ function assignSelected() {
   if (!sample) { alert('Please select a sample first.'); return; }
   if (selectedWells.size === 0) { alert('Please select at least one well.'); return; }
 
+  pushUndo(`assign ${selectedWells.size} well(s) on plate ${currentPlate}`);
   if (!plateAssignments[currentPlate]) plateAssignments[currentPlate] = {};
   // Any control-type sample belongs in the control area — restricting it to
   // exactly "assay control" locked mAbs and plain controls out of it.
@@ -2337,6 +2347,7 @@ function assignSelectedAllPlates() {
   if (!sample) { alert('Please select a sample first.'); return; }
   if (selectedWells.size === 0) { alert('Please select at least one well.'); return; }
 
+  pushUndo(`place ${sample.input_id} on all plates`);
   const wells = [...selectedWells];
   const isCtrl = isAnyControl(sample);
   let placed = 0, skipped = 0;
@@ -2372,6 +2383,9 @@ function assignSelectedAllPlates() {
 }
 
 function clearWell(key) {
+  if (plateAssignments[currentPlate] && plateAssignments[currentPlate][key]) {
+    pushUndo(`clear well ${key}`);
+  }
   if (plateAssignments[currentPlate]) {
     const prev = plateAssignments[currentPlate][key];
     if (prev) {
@@ -2389,6 +2403,7 @@ function clearWell(key) {
 function clearPlate() {
   if (confirm(`Clear all assignments on Plate ${currentPlate}?`)) {
     const n = Object.keys(plateAssignments[currentPlate] || {}).length;
+    if (n) pushUndo(`clear plate ${currentPlate}`);
     if (n) mutate('plate_cleared', { plate: currentPlate, well: '(whole plate)', count: n });
     plateAssignments[currentPlate] = {};
     selectedWells.clear();
@@ -3115,6 +3130,7 @@ function previewAutofill() {
 
 function applyAutofill() {
   if (!autofillPlan) return;
+  pushUndo('autofill');
   // Merge into existing — skip already-assigned wells (do NOT clear plates first)
   Object.entries(autofillPlan).forEach(([plateNum, wells]) => {
     const p = parseInt(plateNum);
@@ -3311,6 +3327,74 @@ function onWellEditAction() {
   document.getElementById('weReplaceField').style.display = act === 'replace' ? '' : 'none';
 }
 
+// ─── Undo (ticket 1.4) ────────────────────────────────────────────────────────
+// Snapshots rather than inverse operations. The acceptance criterion is that an
+// undo restores the *exact* prior layout, and a snapshot guarantees that where a
+// hand-written inverse can drift — particularly for bulk actions like autofill,
+// which touches hundreds of wells across plates and interacts with whatever was
+// already placed. The state a mutation can touch is small enough to copy.
+const UNDO_DEPTH = 50;
+let undoStack = [];
+
+function snapshotState() {
+  return {
+    plateAssignments: JSON.parse(JSON.stringify(plateAssignments)),
+    plateReserved: Object.fromEntries(
+      Object.entries(plateReserved).map(([k, v]) => [k, [...v]])),
+    areaUnlocked: Object.assign({}, areaUnlocked),
+    manualBridge: [...manualBridge]
+  };
+}
+
+function restoreState(snap) {
+  plateAssignments = JSON.parse(JSON.stringify(snap.plateAssignments));
+  plateReserved = Object.fromEntries(
+    Object.entries(snap.plateReserved).map(([k, v]) => [k, new Set(v)]));
+  areaUnlocked = Object.assign({}, snap.areaUnlocked);
+  manualBridge = new Set(snap.manualBridge);
+}
+
+// Called immediately before a mutation, with a label naming what is about to
+// happen, so the toolbar can offer "Undo clear plate 5" rather than just "Undo".
+function pushUndo(label) {
+  undoStack.push({ label, state: snapshotState() });
+  if (undoStack.length > UNDO_DEPTH) undoStack.shift();
+  updateUndoButton();
+}
+
+function undo() {
+  const entry = undoStack.pop();
+  if (!entry) return;
+  restoreState(entry.state);
+  // The change log is deliberately not rolled back: an undo is itself an event
+  // worth recording, and erasing history would defeat the audit trail.
+  mutate('undo', { plate: '—', well: '—', note: `undid: ${entry.label}` });
+  selectedWells.clear();
+  renderPlate();
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  buildAssignSelect();
+  updateStats();
+  updateUndoButton();
+}
+
+function updateUndoButton() {
+  const btn = document.getElementById('undoBtn');
+  if (!btn) return;
+  const next = undoStack[undoStack.length - 1];
+  btn.disabled = !next;
+  btn.textContent = next ? `↶ Undo ${next.label}` : '↶ Undo';
+  btn.title = next ? `Undo: ${next.label}` : 'Nothing to undo';
+}
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    const tag = (e.target && e.target.tagName) || '';
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+    e.preventDefault();
+    undo();
+  }
+});
+
 // Ticket 1.3. The Change Log is presented as the design's audit trail, so
 // every state change has to reach it — not only well edits. Bulk operations
 // record one summarised row with a well count rather than N rows, which keeps
@@ -3345,6 +3429,7 @@ function applyWellEdit() {
 
   const act = document.getElementById('weAction').value;
   const note = document.getElementById('weReason').value.trim();
+  pushUndo(`edit well ${well} on plate ${plate}`);
   const mates = wellsOfSampleOnPlate(plate, a.tiu_id);
   const pairBox = document.getElementById('wePair');
   const targets = (mates.length > 1 && pairBox.checked) ? mates : [well];
