@@ -1416,6 +1416,10 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <span style="color:var(--muted)">Load an index kit to begin.</span>
     </div>
     <div class="modal-actions">
+      <button class="btn btn-ghost" id="clearIndexBtn" onclick="clearIndexAssignments()"
+              style="margin-right:auto;" disabled
+              title="Release every index issued in this design so it can be assigned again">
+        ✕ Clear assignments</button>
       <button class="btn btn-ghost" onclick="closeIndexModal()">Cancel</button>
       <button class="btn btn-ghost" onclick="previewIndexPlan()">Preview</button>
       <button class="btn btn-primary" id="applyIndexBtn" onclick="applyIndexPlan()" disabled>Assign indexes</button>
@@ -1539,7 +1543,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'd4e68d9';
+const DESIGNER_BUILD = 'b30ccac';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -4631,7 +4635,11 @@ function snapshotState() {
       Object.entries(plateReserved).map(([k, v]) => [k, [...v]])),
     areaUnlocked: Object.assign({}, areaUnlocked),
     manualBridge: [...manualBridge],
-    totalPlates                       // adding or removing a plate is undoable too
+    totalPlates,                      // adding or removing a plate is undoable too
+    // Index assignments are a choice, not an append-only ledger like the
+    // instance uids, so a mistaken clear or a mis-set start plate is undoable.
+    indexAssignments: JSON.parse(JSON.stringify(indexAssignments)),
+    appliedIndexPlan: appliedIndexPlan ? JSON.parse(JSON.stringify(appliedIndexPlan)) : null
   };
 }
 
@@ -4641,6 +4649,8 @@ function restoreState(snap) {
     Object.entries(snap.plateReserved).map(([k, v]) => [k, new Set(v)]));
   areaUnlocked = Object.assign({}, snap.areaUnlocked);
   manualBridge = new Set(snap.manualBridge);
+  if (snap.indexAssignments) indexAssignments = JSON.parse(JSON.stringify(snap.indexAssignments));
+  appliedIndexPlan = snap.appliedIndexPlan ? JSON.parse(JSON.stringify(snap.appliedIndexPlan)) : null;
   if (snap.totalPlates) {
     totalPlates = snap.totalPlates;
     currentPlate = Math.min(currentPlate, totalPlates);
@@ -5168,9 +5178,18 @@ function previewIndexPlan() {
     return;
   }
 
+  const held = Object.keys(indexAssignments).length;
+  const clearBtn = document.getElementById('clearIndexBtn');
+  if (clearBtn) {
+    clearBtn.disabled = held === 0;
+    clearBtn.textContent = held ? `✕ Clear ${held} assignment(s)` : '✕ Clear assignments';
+  }
   const already = plan.assigned.filter(a => indexAssignments[a.inst.uid]).length;
   const blocked = plan.collisions.length || plan.problems.length;
-  btn.disabled = !!blocked;
+  // Everything already carries an index, so Assign would do nothing: say so
+  // rather than leaving a live button that has no effect.
+  const noop = already === plan.assigned.length && already > 0;
+  btn.disabled = !!blocked || noop;
 
   const pct = x => (x * 100).toFixed(0) + '%';
   const colourRows = plan.colour.map(c => {
@@ -5187,7 +5206,11 @@ function previewIndexPlan() {
     `${plan.assigned.length} instance(s) → index plate(s) <strong>${plan.indexPlates.join(', ') || '—'}</strong>` +
     ` · ${plan.poolNames.length} pool(s): ${escHtml(plan.poolNames.join(', '))}` +
     ` · i5 ${plan.i5Orientation === 'rc' ? 'reverse complement' : 'forward'}` +
-    (already ? `<br>${already} instance(s) already have an index — those are kept as issued.` : '') +
+    (already
+      ? `<br>${already} instance(s) already have an index — those are kept as issued.` +
+        (noop ? ` <strong>Nothing left to assign.</strong> Clear the assignments first if ` +
+                `this needs redoing.` : '')
+      : '') +
     `</div>` +
     (plan.problems.length
       ? `<div class="pv-notes"><span class="warn">⚠ ${plan.problems.length} instance(s) could not be given an index:</span><br>` +
@@ -5215,7 +5238,9 @@ function applyIndexPlan() {
 
   // Issued is issued: an index already bound to an instance is never quietly
   // moved, for the same reason the instance uid is not — a barcode that changes
-  // after the libraries are made is a silent data-linking failure.
+  // after the libraries are made is a silent data-linking failure. Deliberately
+  // clearing them is the way back, and both directions are undoable.
+  pushUndo('assign indexes');
   let kept = 0, added = 0;
   plan.assigned.forEach(a => {
     if (indexAssignments[a.inst.uid]) { kept++; return; }
@@ -5246,6 +5271,37 @@ function applyIndexPlan() {
   alert(`${added} index pair(s) assigned` + (kept ? `, ${kept} kept from an earlier assignment` : '') +
         `.\n\nIndex plate(s) used: ${plan.indexPlates.join(', ')}.\n` +
         `They are written to the Index Assignments sheet on export.`);
+}
+
+// An index is never quietly reassigned, which is right — but a wrong start
+// plate or the wrong sheet is a mistake someone makes once and needs to undo,
+// and "never" without a way back is just a trap. Clearing is deliberate, says
+// what it costs, is recorded, and is undoable.
+function clearIndexAssignments() {
+  const uids = Object.keys(indexAssignments);
+  if (!uids.length) { alert('No index assignments to clear.'); return; }
+  const plates = [...new Set(Object.values(indexAssignments).map(a => a.indexPlate))]
+    .sort((a, b) => a - b);
+  const pools = [...new Set(Object.values(indexAssignments).map(a => a.pool))];
+
+  if (!confirm(
+    `Release all ${uids.length} index assignment(s)?\n\n` +
+    `Index plate(s) ${plates.join(', ')} go back to unused, and the next assignment ` +
+    `starts at plate ${plates[0]} again.\n\n` +
+    `Do this only if the libraries have NOT been prepared against these barcodes. ` +
+    `If they have, the barcodes are already physically in the tubes and clearing ` +
+    `here would break the link between the design and the sequencing data.\n\n` +
+    `This is undoable, and is recorded in the Change Log.`)) return;
+
+  pushUndo('clear index assignments');
+  indexAssignments = {};
+  appliedIndexPlan = null;
+  // The plates this design had taken are free again, so the next run should
+  // start where this one did rather than skipping past barcodes nobody used.
+  saveIndexCursor(plates[0]);
+  mutate('indexes_cleared', { plate: '—', well: '—', count: uids.length,
+    note: `released index plate(s) ${plates.join(', ')} across ${pools.length} pool(s)` });
+  previewIndexPlan();
 }
 
 // The kit and the cursor live in IndexedDB with the session autosave: a lab uses
