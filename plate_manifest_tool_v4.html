@@ -1559,7 +1559,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'd38de3f';
+const DESIGNER_BUILD = '8dc0619';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -6219,9 +6219,15 @@ function validateLayout() {
       (wellsOf[a.tiu_id] = wellsOf[a.tiu_id] || []).push({ plate: p, well });
       const src = byTiu[a.tiu_id];
       if (res.has(well)) {
-        // An unlocked area is a deliberate choice; a locked one is not.
-        if (!unlocked) inLocked.push(`P${p} ${well}`);
-        else if (!isAnyControl(src)) sampleInArea.push(`P${p} ${well} ${a.input_id}`);
+        // The control area is *for* controls, so one sitting there is the
+        // intended use and never a finding — the lock governs what autofill and
+        // drag-select may reach, not what is allowed to be there. Only an
+        // ordinary sample in that area is worth reporting: on an unlocked plate
+        // that is a choice someone made, on a locked one it contradicts the
+        // design's own stated intent.
+        if (isAnyControl(src)) return;
+        if (unlocked) sampleInArea.push(`P${p} ${well} ${a.input_id}`);
+        else inLocked.push(`P${p} ${well} ${a.input_id}`);
       } else if (isAnyControl(src)) {
         ctrlOutside.push(`P${p} ${well} ${a.input_id}`);
       }
@@ -6231,8 +6237,9 @@ function validateLayout() {
   if (badKeys.length)
     add(errors, 'Well references that are not a real 96-well position', badKeys);
   if (inLocked.length)
-    add(errors, 'Wells assigned inside a locked control area', inLocked,
-      'Unlock the control area on those plates if this is deliberate, or move the samples out.');
+    add(errors, 'Ordinary samples inside a locked control area', inLocked,
+      'The area is reserved for controls and was not unlocked, so these arrived by a route ' +
+      'that bypassed it. Move them out, or unlock the area if the space is genuinely needed.');
   if (ctrlOutside.length)
     add(warnings, 'Controls placed outside the control area', ctrlOutside,
       'Fine if intended — worth a second look, since the control area is where the bench expects them.');
@@ -6343,6 +6350,9 @@ function validateLayout() {
   const eligible = samples.filter(isAutofillable);
   const placed = new Set(Object.keys(wellsOf));
   const missing = eligible.filter(x => !placed.has(x.tiu_id));
+  // Controls are placed too but are not part of the eligible pool, so counting
+  // them in the numerator produced "208 of 200 placed".
+  const controlsPlaced = [...placed].filter(t => isAnyControl(byTiu[t])).length;
   if (missing.length)
     add(notes, `${missing.length} eligible sample(s) not placed anywhere`,
       missing.slice(0, 40).map(x => `${x.input_id} (${x.tiu_id})`),
@@ -6352,7 +6362,8 @@ function validateLayout() {
     errors, warnings, notes, opts,
     stats: {
       assigned,
-      samplesPlaced: placed.size,
+      samplesPlaced: placed.size - controlsPlaced,
+      controlsPlaced,
       eligible: eligible.length,
       plates: totalPlates
     }
@@ -6366,9 +6377,10 @@ function openValidation() {
   const clean = !nE && !nW;
   summary.innerHTML = clean
     ? `<strong style="color:#2d7d46;">✓ No problems found.</strong> ` +
-      `${r.stats.assigned} well(s), ${r.stats.samplesPlaced} of ${r.stats.eligible} eligible ` +
-      `sample(s) placed across ${r.stats.plates} plate(s), checked as ` +
-      `${r.opts.replicates} replicate(s), ${escHtml(r.opts.layout)}.`
+      `${r.stats.assigned} well(s) across ${r.stats.plates} plate(s): ` +
+      `${r.stats.samplesPlaced} of ${r.stats.eligible} eligible sample(s)` +
+      (r.stats.controlsPlaced ? ` plus ${r.stats.controlsPlaced} control(s)` : '') +
+      `, checked as ${r.opts.replicates} replicate(s), ${escHtml(r.opts.layout)}.`
     : `Checked ${r.stats.assigned} well(s) across ${r.stats.plates} plate(s) as ` +
       `${r.opts.replicates} replicate(s), ${escHtml(r.opts.layout)} — ` +
       `<strong>${nE} error(s), ${nW} warning(s)</strong>${nN ? `, ${nN} note(s)` : ''}.`;
