@@ -1451,7 +1451,22 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
               title="Read the current plate's control area back into the template">Capture from this plate</button>
     </div>
     <div id="ctlBody" style="max-height:40vh;overflow:auto;margin:6px 0;"></div>
-    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:6px;">
+    <div style="display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap;margin-top:8px;">
+      <div>
+        <label for="ctlScope" style="font-size:10px;">Stamp onto</label>
+        <select id="ctlScope" style="width:210px;" onchange="onControlScopeChange()">
+          <option value="all">All plates</option>
+          <option value="current">This plate only</option>
+          <option value="custom">Chosen plates…</option>
+        </select>
+      </div>
+      <div id="ctlPlatesWrap" style="display:none;">
+        <label for="ctlPlates" style="font-size:10px;">Plates</label>
+        <input type="text" id="ctlPlates" placeholder="e.g. 1-4, 7" style="width:150px;"
+               oninput="renderControlTemplate()">
+      </div>
+    </div>
+    <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:8px;">
       <label class="toggle-wrap" style="margin:0;">
         <input type="checkbox" id="ctlRotate" onchange="renderControlTemplate()">
         <span>Rotate the position per plate (seeded) so control identity is not confounded with well</span>
@@ -1464,7 +1479,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     <div id="ctlFit" style="margin-top:8px;font-size:11px;"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeControlModal()">Cancel</button>
-      <button class="btn btn-primary" id="ctlApplyBtn" onclick="applyControlTemplate()">Apply to all plates</button>
+      <button class="btn btn-primary" id="ctlApplyBtn" onclick="applyControlTemplate()">Stamp</button>
     </div>
   </div>
 </div>
@@ -1544,7 +1559,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '74952e6';
+const DESIGNER_BUILD = 'd38de3f';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -1863,7 +1878,7 @@ function resetDesigner() {
   volumeFlagged = [];
   volumePreflightShown = false;
   controlTemplate = [];
-  appliedControlTemplate = null;
+  appliedControlTemplates = [];
   indexAssignments = {};
   appliedIndexPlan = null;
   sourceBytes = null;
@@ -1920,7 +1935,7 @@ function processFile(file) {
     volumeFlagged = [];
     volumePreflightShown = false;
     controlTemplate = [];
-    appliedControlTemplate = null;
+    appliedControlTemplates = [];
     indexAssignments = {};
     appliedIndexPlan = null;
     manualBridge = new Set();
@@ -4917,6 +4932,38 @@ function indexSheetCandidates(wb) {
 }
 
 // ── Assignment ───────────────────────────────────────────────────────────────
+// "1-4, 7" → [1,2,3,4,7]. Shared by anything that lets someone name a subset of
+// the run: out-of-range and unparseable entries are dropped rather than
+// guessed at, and the caller reports what it ended up with.
+function parsePlateSpec(text, max) {
+  const out = new Set();
+  const top = max || totalPlates;
+  String(text || '').split(/[;,]/).map(x => x.trim()).filter(Boolean).forEach(part => {
+    const m = part.match(/^(\d+)\s*(?:-|–|to)\s*(\d+)$/);
+    if (m) {
+      const a = Math.min(+m[1], +m[2]), b = Math.max(+m[1], +m[2]);
+      for (let p = a; p <= b; p++) if (p >= 1 && p <= top) out.add(p);
+    } else if (/^\d+$/.test(part)) {
+      const p = +part;
+      if (p >= 1 && p <= top) out.add(p);
+    }
+  });
+  return [...out].sort((a, b) => a - b);
+}
+
+function controlTargetPlates() {
+  const scope = (document.getElementById('ctlScope') || {}).value || 'all';
+  if (scope === 'current') return [currentPlate];
+  if (scope === 'custom') return parsePlateSpec((document.getElementById('ctlPlates') || {}).value);
+  return Array.from({ length: totalPlates }, (_, i) => i + 1);
+}
+
+function onControlScopeChange() {
+  const custom = document.getElementById('ctlScope').value === 'custom';
+  document.getElementById('ctlPlatesWrap').style.display = custom ? '' : 'none';
+  renderControlTemplate();
+}
+
 function poolsForPlates(spec) {
   // "" or "run" → one pool; "plate" → one per plate; "1-4,5-8" → as written
   const pools = {};
@@ -5591,7 +5638,10 @@ function coverageForPlan(res) {
 // physical well on every plate — otherwise control identity and well position
 // are perfectly confounded.
 let controlTemplate = [];        // [{ tiu_id, replicates }] in stamping order
-let appliedControlTemplate = null;
+// A list, not one template: plates 1-4 may take one standard set and 5-8
+// another, and a record that only remembers the last stamp would describe a run
+// that never happened.
+let appliedControlTemplates = [];
 
 // The reserved area's chunks, in the same order autofill would use, so a
 // template lands on whole replicate pairs rather than straddling them.
@@ -5679,39 +5729,56 @@ function renderControlTemplate() {
       }).join('')}
     </table>`;
 
-  // Fit is checked against every plate, not just the one on screen: control
-  // areas can differ per plate, and a template that fits plate 1 and not
-  // plate 6 is the failure this check exists to catch.
+  // Fit is checked against every plate being stamped, not just the one on
+  // screen: control areas can differ per plate, and a template that fits plate
+  // 1 and not plate 6 is the failure this check exists to catch.
+  const targets = controlTargetPlates();
   const fit = document.getElementById('ctlFit');
   const apply = document.getElementById('ctlApplyBtn');
+  apply.textContent = targets.length === 1 ? `Stamp plate ${targets[0]}`
+                    : targets.length === totalPlates ? 'Stamp all plates'
+                    : `Stamp ${targets.length} plate(s)`;
   if (!chosen.length) {
     fit.innerHTML = '<span style="color:var(--muted);">Choose at least one control.</span>';
     apply.disabled = true;
     return;
   }
-  // Every plate is checked, but a reason repeated eight times reads as noise —
+  if (!targets.length) {
+    fit.innerHTML = `<span style="color:#b84040;font-weight:600;">No plates selected.</span> ` +
+      `Name them like <code>1-4, 7</code> — this run has plates 1–${totalPlates}.`;
+    apply.disabled = true;
+    return;
+  }
+  // Every target is checked, but a reason repeated eight times reads as noise —
   // say it once and name how many plates it applies to.
   const byReason = {};
-  for (let p = 1; p <= totalPlates; p++) {
+  targets.forEach(p => {
     const r = planControlTemplate(p, chosen, rotate, seed);
     if (!r.ok) {
       const generic = r.reason.replace(/^plate \d+/, 'a plate');
       (byReason[generic] = byReason[generic] || []).push(p);
     }
-  }
+  });
   const problems = Object.entries(byReason).map(([reason, ps]) =>
-    ps.length === totalPlates ? `every plate ${reason.replace(/^a plate /, '')}`
-                              : `${reason.replace(/^a plate/, `plate(s) ${ps.join(', ')}`)}`);
+    ps.length === targets.length ? `every plate ${reason.replace(/^a plate /, '')}`
+                                 : `${reason.replace(/^a plate/, `plate(s) ${ps.join(', ')}`)}`);
   const missing = chosen.filter(e => !byTiu[e.tiu_id]).map(e => e.tiu_id);
   if (missing.length) problems.push(`not in this manifest: ${missing.join(', ')}`);
 
   apply.disabled = problems.length > 0;
   const wells = chosen.reduce((a, e) => a + e.replicates, 0);
+  const where = targets.length === totalPlates ? 'every plate'
+              : targets.length === 1 ? `plate ${targets[0]}`
+              : `plates ${targets.join(', ')}`;
   fit.innerHTML = problems.length
     ? `<span style="color:#b84040;font-weight:600;">✕ Cannot apply.</span> ${escHtml(problems.join(' · '))}`
-    : `<span style="color:#2d7d46;font-weight:600;">✓ Fits every plate.</span> ` +
-      `${chosen.length} control(s), ${wells} well(s) per plate, ${wells * totalPlates} in total` +
-      (rotate ? ', rotated per plate' : '');
+    : `<span style="color:#2d7d46;font-weight:600;">✓ Fits ${escHtml(where)}.</span> ` +
+      `${chosen.length} control(s), ${wells} well(s) per plate, ` +
+      `${wells * targets.length} in total` +
+      (rotate ? ', rotated per plate' : '') +
+      (targets.length < totalPlates
+        ? ` — the other ${totalPlates - targets.length} plate(s) are left as they are.`
+        : '');
 }
 
 function setControlEntry(i, value) {
@@ -5758,10 +5825,12 @@ function applyControlTemplate() {
   const seed = document.getElementById('ctlSeed').value;
   const chosen = controlTemplate.filter(e => e.replicates > 0);
   if (!chosen.length) return;
+  const targets = controlTargetPlates();
+  if (!targets.length) { alert('No plates selected.'); return; }
 
   // Refuse the whole operation rather than half-stamping the run
   const plans = [];
-  for (let p = 1; p <= totalPlates; p++) {
+  for (const p of targets) {
     const r = planControlTemplate(p, chosen, rotate, seed);
     if (!r.ok) { alert(`Template not applied — ${r.reason}.`); return; }
     plans.push({ plate: p, plan: r });
@@ -5793,7 +5862,27 @@ function applyControlTemplate() {
             (rotate ? ` (rotation offset ${plan.offset})` : '') });
   });
 
-  appliedControlTemplate = { entries: chosen.map(e => Object.assign({}, e)), rotate, seed };
+  // Replace any earlier record covering these same plates, so re-stamping a
+  // plate corrects the log rather than leaving two contradictory entries.
+  appliedControlTemplates = appliedControlTemplates
+    .map(t => Object.assign({}, t, { plates: t.plates.filter(p => !targets.includes(p)) }))
+    .filter(t => t.plates.length);
+  const record = {
+    entries: chosen.map(e => Object.assign({}, e)),
+    rotate, seed, plates: targets.slice(),
+    name: (document.getElementById('ctlTemplateName').value || '').trim(),
+    appliedAt: new Date().toISOString()
+  };
+  // Stamping the same set onto more plates later is one set on more plates, not
+  // a second set that happens to be identical — the log should read that way.
+  const sig = t => JSON.stringify([t.entries.map(e => [e.tiu_id, e.replicates]), t.rotate, t.seed]);
+  const twin = appliedControlTemplates.find(t => sig(t) === sig(record));
+  if (twin) {
+    twin.plates = [...new Set(twin.plates.concat(targets))].sort((a, b) => a - b);
+    twin.appliedAt = record.appliedAt;
+  } else {
+    appliedControlTemplates.push(record);
+  }
   closeControlModal();
   renderPlate();
   renderSampleList();
@@ -6854,14 +6943,22 @@ function writeTecanGwl() {
 // Shared by both Design Log shapes — a run where the only thing that happened
 // was stamping the controls deserves the same record as one with a full plan.
 function controlTemplateRows() {
-  if (!appliedControlTemplate || !appliedControlTemplate.entries) return [];
-  const rows = [[], ['Control template'], ['Position', 'Control', 'tiu_id', 'Wells per plate']];
-  appliedControlTemplate.entries.forEach((e, i) => {
-    const src = byTiu[e.tiu_id] || {};
-    rows.push([i + 1, src.input_id || e.tiu_id, e.tiu_id, e.replicates]);
+  if (!appliedControlTemplates.length) return [];
+  const rows = [[], ['Control templates']];
+  appliedControlTemplates.forEach((t, ti) => {
+    const where = t.plates.length === totalPlates ? 'all plates'
+                : t.plates.length === 1 ? `plate ${t.plates[0]}`
+                : `plates ${t.plates.join(', ')}`;
+    rows.push([]);
+    rows.push([`Set ${ti + 1}${t.name ? ' — ' + t.name : ''}`, where]);
+    rows.push(['Position', 'Control', 'tiu_id', 'Wells per plate']);
+    t.entries.forEach((e, i) => {
+      const src = byTiu[e.tiu_id] || {};
+      rows.push([i + 1, src.input_id || e.tiu_id, e.tiu_id, e.replicates]);
+    });
+    rows.push(['Rotated per plate', t.rotate
+      ? `yes — seed ${t.seed}` : 'no — same wells on every plate']);
   });
-  rows.push(['Rotated per plate', appliedControlTemplate.rotate
-    ? `yes — seed ${appliedControlTemplate.seed}` : 'no — same wells on every plate']);
   return rows;
 }
 
@@ -7199,7 +7296,7 @@ function buildDesignState() {
     dead_volume_uL: deadVolumeUL,
     freeze_thaw_max: freezeThawMax,
     volume_resolution: volumeResolution,
-    control_template: appliedControlTemplate,
+    control_templates: appliedControlTemplates,
     index_assignments: indexAssignments,
     index_plan: appliedIndexPlan,
     assignments,
@@ -7257,12 +7354,17 @@ function applyDesignState(st) {
   if (Number.isFinite(st.dead_volume_uL)) deadVolumeUL = st.dead_volume_uL;
   freezeThawMax = Number.isFinite(st.freeze_thaw_max) ? st.freeze_thaw_max : null;
   volumeResolution = Object.assign({}, st.volume_resolution || {});
-  appliedControlTemplate = st.control_template || null;
+  // Files written before templates could target a subset carry a single object
+  appliedControlTemplates = st.control_templates
+    ? st.control_templates.slice()
+    : (st.control_template && st.control_template.entries
+        ? [Object.assign({}, st.control_template,
+            { plates: Array.from({ length: totalPlates }, (_, i) => i + 1) })]
+        : []);
   indexAssignments = Object.assign({}, st.index_assignments || {});
   appliedIndexPlan = st.index_plan || null;
-  if (appliedControlTemplate && appliedControlTemplate.entries) {
-    controlTemplate = appliedControlTemplate.entries.map(e => Object.assign({}, e));
-  }
+  const lastTpl = appliedControlTemplates[appliedControlTemplates.length - 1];
+  if (lastTpl && lastTpl.entries) controlTemplate = lastTpl.entries.map(e => Object.assign({}, e));
   buildVolumeRuleRows();
   appliedPlanSummary = st.applied_plan_meta || null;
   changeLog = (st.change_log || []).map(c => Object.assign({}, c, { prior: true }));
