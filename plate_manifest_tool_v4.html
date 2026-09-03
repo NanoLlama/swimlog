@@ -1360,9 +1360,10 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   <div class="autofill-modal" style="max-width:880px;">
     <h2>🧬 Index assignment</h2>
     <p style="margin-bottom:8px;">
-      Every library in a sequencing pool needs a barcode nobody else in that pool has.
-      Load the kit's own workbook rather than retyping it — a slip in a ten-base sequence
-      is not something anyone catches by eye.
+      Every well is its own library — replicates are amplified and indexed separately —
+      and every library in a pool needs a barcode nobody else in that pool has. Load the
+      kit's own workbook rather than retyping it: a slip in a ten-base sequence is not
+      something anyone catches by eye.
     </p>
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
       <div>
@@ -1543,7 +1544,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'b30ccac';
+const DESIGNER_BUILD = '74952e6';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -1857,6 +1858,7 @@ function resetDesigner() {
   restoredFrom = null;
   editingWell = null;
   instanceIds = {};
+  libraryIds = {};
   volumeResolution = {};
   volumeFlagged = [];
   volumePreflightShown = false;
@@ -1913,6 +1915,7 @@ function processFile(file) {
     changeLog = [];
     restoredFrom = null;
     instanceIds = {};
+    libraryIds = {};
     volumeResolution = {};
     volumeFlagged = [];
     volumePreflightShown = false;
@@ -4950,8 +4953,8 @@ function hamming(a, b) {
 // a time. Sequential draw is for kits that are not plated to match.
 function planIndexAssignment(opts) {
   if (!indexKit || !indexKit.pairs.length) return { error: 'No index kit loaded.' };
-  const instances = enumerateInstances();
-  if (!instances.length) return { error: 'No samples are placed yet.' };
+  const libraries = enumerateLibraries();
+  if (!libraries.length) return { error: 'No samples are placed yet.' };
 
   const pools = poolsForPlates(opts.poolSpec);
   const start = Math.max(1, parseInt(opts.startPlate, 10) || 1);
@@ -4963,26 +4966,27 @@ function planIndexAssignment(opts) {
   const platesUsed = new Set();
 
   if (opts.mode === 'position') {
-    instances.forEach(inst => {
-      const ip = start + inst.plate - 1;
-      // Every well of an instance shares one library, so the index comes from
-      // the first well — the replicate pair is one prep, not two.
-      const src = byPlateWell[`${ip}|${inst.wells[0]}`];
+    // Well for well: a pre-plated kit exists so a whole index plate can be
+    // stamped onto a whole sample plate in one move, which also makes every
+    // well's barcode distinct without anyone having to think about it.
+    libraries.forEach(lib => {
+      const ip = start + lib.plate - 1;
+      const src = byPlateWell[`${ip}|${lib.well}`];
       if (!src) {
-        problems.push(`${inst.uid}: index plate ${ip} has no well ${inst.wells[0]}`);
+        problems.push(`${lib.uid}: index plate ${ip} has no well ${lib.well}`);
         return;
       }
       platesUsed.add(ip);
-      assigned.push({ inst, src, pool: pools[inst.plate] });
+      assigned.push({ lib, src, pool: pools[lib.plate] });
     });
   } else {
-    // Draw in kit order, skipping anything already issued in an earlier run
+    // Draw in kit order, one pair per well
     let cursor = (start - 1) * indexKit.perPlate;
-    instances.forEach(inst => {
+    libraries.forEach(lib => {
       const src = indexKit.pairs[cursor++];
-      if (!src) { problems.push(`${inst.uid}: the kit ran out of index pairs`); return; }
+      if (!src) { problems.push(`${lib.uid}: the kit ran out of index pairs`); return; }
       platesUsed.add(src.indexPlate);
-      assigned.push({ inst, src, pool: pools[inst.plate] });
+      assigned.push({ lib, src, pool: pools[lib.plate] });
     });
   }
 
@@ -4996,7 +5000,7 @@ function planIndexAssignment(opts) {
     list.forEach(a => {
       const key = a.src.i7 + '+' + (a.src.i5_fwd || a.src.i5_rc || '');
       if (seen[key]) {
-        collisions.push(`${pool}: ${seen[key].inst.uid} and ${a.inst.uid} both get ` +
+        collisions.push(`${pool}: ${seen[key].lib.uid} and ${a.lib.uid} both get ` +
           `${a.src.name || key} (index plate ${a.src.indexPlate} ${a.src.well})`);
       } else seen[key] = a;
     });
@@ -5006,7 +5010,7 @@ function planIndexAssignment(opts) {
     for (let i = 0; i < keys.length; i++) {
       for (let j = i + 1; j < keys.length; j++) {
         if (hamming(keys[i], keys[j]) === 1) {
-          nearMisses.push(`${pool}: ${seen[keys[i]].inst.uid} and ${seen[keys[j]].inst.uid} ` +
+          nearMisses.push(`${pool}: ${seen[keys[i]].lib.uid} and ${seen[keys[j]].lib.uid} ` +
             `differ by one base (${keys[i]} vs ${keys[j]})`);
         }
       }
@@ -5184,7 +5188,7 @@ function previewIndexPlan() {
     clearBtn.disabled = held === 0;
     clearBtn.textContent = held ? `✕ Clear ${held} assignment(s)` : '✕ Clear assignments';
   }
-  const already = plan.assigned.filter(a => indexAssignments[a.inst.uid]).length;
+  const already = plan.assigned.filter(a => indexAssignments[a.lib.uid]).length;
   const blocked = plan.collisions.length || plan.problems.length;
   // Everything already carries an index, so Assign would do nothing: say so
   // rather than leaving a live button that has no effect.
@@ -5203,11 +5207,12 @@ function previewIndexPlan() {
 
   box.innerHTML =
     `<div class="pv-head">` +
-    `${plan.assigned.length} instance(s) → index plate(s) <strong>${plan.indexPlates.join(', ') || '—'}</strong>` +
+    `${plan.assigned.length} librar${plan.assigned.length === 1 ? 'y' : 'ies'} ` +
+    `(one per well) → index plate(s) <strong>${plan.indexPlates.join(', ') || '—'}</strong>` +
     ` · ${plan.poolNames.length} pool(s): ${escHtml(plan.poolNames.join(', '))}` +
     ` · i5 ${plan.i5Orientation === 'rc' ? 'reverse complement' : 'forward'}` +
     (already
-      ? `<br>${already} instance(s) already have an index — those are kept as issued.` +
+      ? `<br>${already} librar${already === 1 ? 'y' : 'ies'} already have an index — those are kept as issued.` +
         (noop ? ` <strong>Nothing left to assign.</strong> Clear the assignments first if ` +
                 `this needs redoing.` : '')
       : '') +
@@ -5243,8 +5248,8 @@ function applyIndexPlan() {
   pushUndo('assign indexes');
   let kept = 0, added = 0;
   plan.assigned.forEach(a => {
-    if (indexAssignments[a.inst.uid]) { kept++; return; }
-    indexAssignments[a.inst.uid] = {
+    if (indexAssignments[a.lib.uid]) { kept++; return; }
+    indexAssignments[a.lib.uid] = {
       name: a.src.name, well: a.src.well, indexPlate: a.src.indexPlate,
       i7: a.src.i7, i5_fwd: a.src.i5_fwd, i5_rc: a.src.i5_rc,
       pool: a.pool, orientation: plan.i5Orientation
@@ -5265,10 +5270,12 @@ function applyIndexPlan() {
   if (highest) saveIndexCursor(highest + 1);
 
   mutate('indexes_assigned', { plate: '—', well: '—', count: added,
-    note: `${added} new, ${kept} kept · index plate(s) ${plan.indexPlates.join(', ')} · ` +
+    note: `${added} librar${added === 1 ? 'y' : 'ies'} indexed, ${kept} kept · ` +
+          `index plate(s) ${plan.indexPlates.join(', ')} · ` +
           `${plan.poolNames.length} pool(s) · i5 ${plan.i5Orientation}` });
   closeIndexModal();
-  alert(`${added} index pair(s) assigned` + (kept ? `, ${kept} kept from an earlier assignment` : '') +
+  alert(`${added} index pair(s) assigned — one per well` +
+        (kept ? `, ${kept} kept from an earlier assignment` : '') +
         `.\n\nIndex plate(s) used: ${plan.indexPlates.join(', ')}.\n` +
         `They are written to the Index Assignments sheet on export.`);
 }
@@ -6485,6 +6492,44 @@ function enumerateInstances() {
   return out;
 }
 
+// A library is one well. In PhIP-Seq each replicate well is carried through
+// amplification and indexed on its own, so two wells of the same sample are two
+// libraries — and they must not share a barcode, or the technical replicates
+// they exist to provide cannot be told apart in the sequencing data.
+//
+// The instance (a sample on a plate) is still the useful grouping: it is what
+// says which two libraries are replicates of each other.
+let libraryIds = {};        // 'tiu|plate|well' -> library_uid, minted at first use
+
+function libraryKey(tiu_id, plate, well) { return `${tiu_id}|${plate}|${well}`; }
+
+function mintLibraryUid(tiu_id, plate, well) {
+  const key = libraryKey(tiu_id, plate, well);
+  if (libraryIds[key]) return libraryIds[key];
+  const taken = new Set(Object.values(libraryIds));
+  let uid = `${tiu_id}-P${plate}-${well}`;
+  for (let n = 2; taken.has(uid); n++) uid = `${tiu_id}-P${plate}-${well}#${n}`;
+  libraryIds[key] = uid;
+  return uid;
+}
+
+function enumerateLibraries() {
+  const out = [];
+  enumerateInstances().forEach(inst => {
+    inst.wells.forEach((well, i) => {
+      out.push({
+        uid: mintLibraryUid(inst.tiu_id, inst.plate, well),
+        instanceUid: inst.uid,
+        tiu_id: inst.tiu_id, input_id: inst.input_id,
+        plate: inst.plate, well,
+        replicate: i + 1, replicates: inst.wells.length,
+        sample: inst.sample
+      });
+    });
+  });
+  return out;
+}
+
 function buildInstanceSheet() {
   const META = ['subject_id', 'subject_age_yrs', 'subject_sex', 'sample_type',
                 'sample_type_detail', 'volume_mL', 'collection_date', 'cohort',
@@ -6529,21 +6574,24 @@ function buildInstanceSheet() {
 // only once indexes have actually been assigned — an empty sheet of headers
 // invites someone to fill it in by hand, which is the thing this replaces.
 function buildIndexSheet() {
-  const instances = enumerateInstances().filter(i => indexAssignments[i.uid]);
-  if (!instances.length) return null;
-  const rows = [['instance_uid', 'plate', 'wells', 'pool', 'index_plate', 'index_well',
-                 'index_name', 'i7_name', 'i7_sequence', 'i5_name', 'i5_sequence',
-                 'i5_orientation', 'i5_forward', 'i5_reverse_complement',
-                 'source_tiu_id', 'source_input_id', 'sample_type']];
-  instances.forEach(i => {
-    const a = indexAssignments[i.uid];
+  // One row per library, which is one row per well: this is the sample sheet a
+  // sequencing provider works from, and two wells of the same sample are two
+  // separately indexed libraries.
+  const libs = enumerateLibraries().filter(l => indexAssignments[l.uid]);
+  if (!libs.length) return null;
+  const rows = [['library_uid', 'instance_uid', 'plate', 'well', 'replicate', 'pool',
+                 'index_plate', 'index_well', 'index_name', 'i7_name', 'i7_sequence',
+                 'i5_name', 'i5_sequence', 'i5_orientation', 'i5_forward',
+                 'i5_reverse_complement', 'source_tiu_id', 'source_input_id', 'sample_type']];
+  libs.forEach(l => {
+    const a = indexAssignments[l.uid];
     const i5 = a.orientation === 'rc' ? (a.i5_rc || a.i5_fwd) : (a.i5_fwd || a.i5_rc);
     rows.push([
-      i.uid, i.plate, i.wells.join(', '), a.pool, a.indexPlate, a.well,
-      a.name || '', a.name || '', a.i7, a.name || '', i5,
+      l.uid, l.instanceUid, l.plate, l.well, `${l.replicate} of ${l.replicates}`, a.pool,
+      a.indexPlate, a.well, a.name || '', a.name || '', a.i7, a.name || '', i5,
       a.orientation === 'rc' ? 'reverse complement' : 'forward',
       a.i5_fwd || '', a.i5_rc || '',
-      i.tiu_id, i.input_id, i.sample.sample_type || ''
+      l.tiu_id, l.input_id, l.sample.sample_type || ''
     ]);
   });
   const ws = XLSX.utils.aoa_to_sheet(rows);
@@ -6581,7 +6629,7 @@ function wellMapRows() {
   const bridges = new Set();
   Object.values(cov.perPlate).forEach(list => list.forEach(b => bridges.add(b.tiu_id)));
 
-  const header = ['plate', 'well', 'row', 'col', 'is_empty', 'instance_uid', 'tiu_id', 'input_id',
+  const header = ['plate', 'well', 'row', 'col', 'is_empty', 'library_uid', 'instance_uid', 'tiu_id', 'input_id',
                   'is_control', 'is_bridge', 'is_edge', 'replicate_group', 'n_replicates',
                   'in_control_area', 'pool', 'index_plate', 'index_well',
                   'i7_sequence', 'i5_sequence', 'i5_orientation', ...WELL_MAP_META];
@@ -6592,13 +6640,14 @@ function wellMapRows() {
       const well = `${r}${c}`;
       const inst = uidOf[`${p}|${well}`];
       const smp = inst ? inst.sample : null;
-      const idx = inst ? indexAssignments[inst.uid] : null;
+      const libUid = inst ? mintLibraryUid(inst.tiu_id, p, well) : '';
+      const idx = libUid ? indexAssignments[libUid] : null;
       const i5 = idx ? (idx.orientation === 'rc' ? (idx.i5_rc || idx.i5_fwd)
                                                  : (idx.i5_fwd || idx.i5_rc)) : '';
       rows.push([
         p, well, r, c,
         inst ? 'no' : 'yes',
-        inst ? inst.uid : '', inst ? inst.tiu_id : '', inst ? inst.input_id : '',
+        libUid, inst ? inst.uid : '', inst ? inst.tiu_id : '', inst ? inst.input_id : '',
         smp ? (isAnyControl(smp) ? 'yes' : 'no') : '',
         inst ? (bridges.has(inst.tiu_id) ? 'yes' : 'no') : '',
         isEdgeWell(well) ? 'yes' : 'no',
@@ -6676,6 +6725,7 @@ function worklistRows() {
         dest_plate: inst.plate,
         dest_well: w,
         volume_uL: perWell,
+        library_uid: mintLibraryUid(inst.tiu_id, inst.plate, w),
         instance_uid: inst.uid,
         tiu_id: inst.tiu_id,
         input_id: inst.input_id,
@@ -6696,7 +6746,7 @@ function worklistRows() {
 }
 
 const WORKLIST_COLUMNS = ['source_rack', 'source_position', 'dest_plate', 'dest_well',
-                          'volume_uL', 'instance_uid', 'tiu_id', 'input_id',
+                          'volume_uL', 'library_uid', 'instance_uid', 'tiu_id', 'input_id',
                           'sample_type', 'replicate'];
 
 function worklistCsvRows() {
@@ -7144,6 +7194,7 @@ function buildDesignState() {
     manual_bridge: [...manualBridge],
     applied_plan_meta: appliedPlanSummary,
     instance_ids: instanceIds,
+    library_ids: libraryIds,
     volume_rules: volumeRules,
     dead_volume_uL: deadVolumeUL,
     freeze_thaw_max: freezeThawMax,
@@ -7201,6 +7252,7 @@ function applyDesignState(st) {
   (st.area_unlocked || []).forEach(p => { areaUnlocked[p] = true; });
   manualBridge = new Set(st.manual_bridge || []);
   instanceIds = Object.assign({}, st.instance_ids || {});
+  libraryIds = Object.assign({}, st.library_ids || {});
   if (st.volume_rules) volumeRules = JSON.parse(JSON.stringify(st.volume_rules));
   if (Number.isFinite(st.dead_volume_uL)) deadVolumeUL = st.dead_volume_uL;
   freezeThawMax = Number.isFinite(st.freeze_thaw_max) ? st.freeze_thaw_max : null;
