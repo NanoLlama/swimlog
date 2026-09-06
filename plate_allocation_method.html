@@ -1,0 +1,949 @@
+<title>PhIP-Seq Plate Allocation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=DM+Serif+Display&display=swap">
+
+<style>
+  :root {
+    --paper:      #FBFAF7;
+    --raised:     #FFFFFE;
+    --ink:        #1B1F1C;
+    --muted:      #6E756B;
+    --faint:      #939A90;
+    --rule:       #E4E1D8;
+    --accent:     #2D5A3D;
+    --accent-soft:#EAF0EA;
+    /* the tool's own colour-safe cohort palette (Okabe–Ito) */
+    --d1: #0072B2; --d2: #D55E00; --d3: #009E73; --d4: #CC79A7; --d5: #E69F00;
+    --warn:       #A8570F;
+    --shadow:     0 1px 2px rgba(27,31,28,.05);
+
+    --sans: 'DM Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    --serif: 'DM Serif Display', ui-serif, Georgia, 'Times New Roman', serif;
+    --mono: 'DM Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  :root:not([data-theme="light"]) {
+    @media (prefers-color-scheme: dark) {
+      --paper:  #15181A;
+      --raised: #1B1F21;
+      --ink:    #E7E5DE;
+      --muted:  #9AA29B;
+      --faint:  #78807A;
+      --rule:   #2B302D;
+      --accent: #86C39B;
+      --accent-soft: #1E2A22;
+      --d1: #56B4E9; --d2: #E8873C; --d3: #3FC7A0; --d4: #E29AC0; --d5: #EFBB4A;
+      --warn: #E0A45C;
+      --shadow: 0 1px 2px rgba(0,0,0,.3);
+    }
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper:  #15181A;
+      --raised: #1B1F21;
+      --ink:    #E7E5DE;
+      --muted:  #9AA29B;
+      --faint:  #78807A;
+      --rule:   #2B302D;
+      --accent: #86C39B;
+      --accent-soft: #1E2A22;
+      --d1: #56B4E9; --d2: #E8873C; --d3: #3FC7A0; --d4: #E29AC0; --d5: #EFBB4A;
+      --warn: #E0A45C;
+      --shadow: 0 1px 2px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper:  #15181A;
+    --raised: #1B1F21;
+    --ink:    #E7E5DE;
+    --muted:  #9AA29B;
+    --faint:  #78807A;
+    --rule:   #2B302D;
+    --accent: #86C39B;
+    --accent-soft: #1E2A22;
+    --d1: #56B4E9; --d2: #E8873C; --d3: #3FC7A0; --d4: #E29AC0; --d5: #EFBB4A;
+    --warn: #E0A45C;
+    --shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16.5px;
+    line-height: 1.65;
+    margin: 0;
+    padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  /* ── masthead ───────────────────────────────────────────────── */
+  header.masthead {
+    padding: 64px 0 28px;
+    border-bottom: 2px solid var(--ink);
+    margin-bottom: 40px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: clamp(34px, 5.2vw, 52px);
+    line-height: 1.08;
+    letter-spacing: -.01em;
+    margin: 0 0 14px;
+    text-wrap: balance;
+    max-width: 18ch;
+  }
+  .standfirst {
+    font-size: 18.5px;
+    color: var(--muted);
+    max-width: 62ch;
+    margin: 0;
+  }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 30px;
+    margin-top: 26px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    color: var(--faint);
+  }
+  .meta b { color: var(--muted); font-weight: 500; }
+
+  /* ── layout ─────────────────────────────────────────────────── */
+  .body { display: grid; grid-template-columns: 1fr; gap: 0; }
+  @media (min-width: 940px) {
+    .body { grid-template-columns: 200px minmax(0, 1fr); gap: 0 56px; align-items: start; }
+    nav.toc { position: sticky; top: 32px; }
+  }
+  nav.toc {
+    border-left: 2px solid var(--rule);
+    padding-left: 16px;
+    margin-bottom: 44px;
+    font-size: 13.5px;
+  }
+  nav.toc p {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--faint);
+    margin: 0 0 10px;
+  }
+  nav.toc ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+  nav.toc a { color: var(--muted); text-decoration: none; display: block; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent); }
+  nav.toc .n {
+    font-family: var(--mono); font-size: 11px; color: var(--faint); margin-right: 7px;
+  }
+
+  section { margin-bottom: 56px; scroll-margin-top: 24px; }
+  h2 {
+    font-family: var(--sans);
+    font-size: 24px;
+    font-weight: 700;
+    letter-spacing: -.012em;
+    line-height: 1.25;
+    margin: 0 0 6px;
+    text-wrap: balance;
+    display: flex;
+    gap: 14px;
+    align-items: baseline;
+  }
+  h2 .num {
+    font-family: var(--serif);
+    font-weight: 400;
+    font-size: 26px;
+    color: var(--accent);
+    flex: none;
+  }
+  h3 {
+    font-size: 16px;
+    font-weight: 700;
+    margin: 30px 0 6px;
+    letter-spacing: -.005em;
+  }
+  h2 + .lede { color: var(--muted); margin: 0 0 20px; max-width: 66ch; }
+  p, ul, ol { max-width: 66ch; }
+  p { margin: 0 0 16px; }
+  ul, ol { margin: 0 0 16px; padding-left: 20px; }
+  li { margin-bottom: 7px; }
+  li::marker { color: var(--faint); }
+  strong { font-weight: 700; }
+  code {
+    font-family: var(--mono);
+    font-size: .875em;
+    background: var(--accent-soft);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+  a { color: var(--accent); }
+
+  /* ── code blocks ────────────────────────────────────────────── */
+  figure.code { margin: 22px 0 26px; }
+  figure.code pre {
+    margin: 0;
+    background: var(--raised);
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    padding: 16px 18px;
+    overflow-x: auto;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.6;
+    box-shadow: var(--shadow);
+  }
+  figure.code pre code { background: none; padding: 0; font-size: inherit; }
+  figcaption {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 9px;
+    max-width: 68ch;
+  }
+  figcaption b { color: var(--ink); font-weight: 500; }
+
+  /* ── callout ────────────────────────────────────────────────── */
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: 14px 18px;
+    margin: 22px 0;
+    border-radius: 0 5px 5px 0;
+    max-width: 68ch;
+  }
+  .note p { margin: 0; }
+  .note p + p { margin-top: 10px; }
+  .note.limit { border-left-color: var(--warn); background: transparent; }
+
+  /* ── tables ─────────────────────────────────────────────────── */
+  .scroll { overflow-x: auto; margin: 22px 0 8px; }
+  table {
+    border-collapse: collapse;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    font-variant-numeric: tabular-nums;
+    min-width: 100%;
+  }
+  th, td { padding: 7px 12px; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  th {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    border-bottom: 1px solid var(--ink);
+  }
+  th:first-child, td:first-child { text-align: left; }
+  tbody tr:last-child td { border-bottom: none; }
+  tr.total td { font-weight: 500; border-top: 1px solid var(--rule); color: var(--muted); }
+  .swatch {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 8px; vertical-align: middle;
+  }
+  td.flag { color: var(--warn); }
+  td.ok { color: var(--accent); }
+
+  /* ── definition list ────────────────────────────────────────── */
+  dl.terms { margin: 0; display: grid; gap: 0; max-width: 70ch; }
+  dl.terms > div {
+    display: grid; grid-template-columns: 132px minmax(0,1fr); gap: 4px 18px;
+    padding: 11px 0; border-bottom: 1px solid var(--rule);
+  }
+  dl.terms dt { font-family: var(--mono); font-size: 13px; color: var(--accent); }
+  dl.terms dd { margin: 0; color: var(--ink); }
+  @media (max-width: 560px) {
+    dl.terms > div { grid-template-columns: 1fr; }
+  }
+
+  /* ── figures ────────────────────────────────────────────────── */
+  figure.fig { margin: 26px 0 28px; }
+  figure.fig svg { max-width: 100%; height: auto; display: block; }
+  .fig-frame {
+    border: 1px solid var(--rule);
+    border-radius: 6px;
+    background: var(--raised);
+    padding: 22px 20px;
+    overflow-x: auto;
+    box-shadow: var(--shadow);
+  }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    margin-top: 20px;
+    padding-top: 20px;
+    font-size: 13px;
+    color: var(--faint);
+    max-width: 68ch;
+  }
+  footer code { background: none; padding: 0; }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <p class="eyebrow">Method note · Translational Immunopsychiatry Unit</p>
+  <h1>How samples are distributed across plates</h1>
+  <p class="standfirst">
+    The rationale, the algorithm and the measured behaviour of the layout planner in the
+    PhIP-Seq Plate Designer — enough to defend a layout, reproduce one, or argue with it.
+  </p>
+  <div class="meta">
+    <span><b>Applies to</b> designer v4.3.0</span>
+    <span><b>Function</b> <code>computeAutofillPlan</code></span>
+    <span><b>Reference run</b> 218 samples · 8 plates · seed 20260710</span>
+  </div>
+</header>
+
+<div class="body">
+
+<nav class="toc" aria-label="Contents">
+  <p>Contents</p>
+  <ol>
+    <li><a href="#why"><span class="n">1</span>The problem</a></li>
+    <li><a href="#terms"><span class="n">2</span>Terms</a></li>
+    <li><a href="#eligible"><span class="n">3</span>What gets dealt</a></li>
+    <li><a href="#pipeline"><span class="n">4</span>The pipeline</a></li>
+    <li><a href="#units"><span class="n">5</span>Units and groups</a></li>
+    <li><a href="#windows"><span class="n">6</span>Windows and quotas</a></li>
+    <li><a href="#deal"><span class="n">7</span>Dealing a group</a></li>
+    <li><a href="#wells"><span class="n">8</span>Units to wells</a></li>
+    <li><a href="#seed"><span class="n">9</span>Reproducibility</a></li>
+    <li><a href="#measured"><span class="n">10</span>Measured behaviour</a></li>
+    <li><a href="#limits"><span class="n">11</span>What it does not do</a></li>
+    <li><a href="#verify"><span class="n">12</span>Verification</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="why">
+  <h2><span class="num">1</span>The problem the layout solves</h2>
+  <p class="lede">Plate position is not neutral, and neither is plate membership.</p>
+
+  <p>
+    A PhIP-Seq run spreads a cohort across several 96-well plates. Each plate is processed as a
+    batch: its own bead lot, its own thermocycler position, its own operator-hours. Systematic
+    differences between plates are real and expected.
+  </p>
+  <p>
+    That only becomes a problem when plate membership <em>lines up with</em> something biological.
+    If every Lupus sample sits on plate 1 and every healthy control on plate 4, then "Lupus versus
+    healthy" and "plate 1 versus plate 4" are the same contrast, measured once. No amount of
+    downstream statistics separates them, because the design never let them vary independently.
+    The layout is where that is won or lost — after the plates are pipetted it is too late.
+  </p>
+  <p>
+    The planner's job is therefore to make every plate a <strong>scale model of the run</strong>:
+    each cohort present on each plate in roughly its run-wide proportion. Two constraints pull
+    against that, and both are honoured:
+  </p>
+  <ul>
+    <li>
+      <strong>The bench needs contiguity.</strong> A layout that scatters a cohort across a plate is
+      slower to pipette by hand and easier to get wrong. Samples are therefore dealt as
+      <em>contiguous runs</em> — the consecutive block of tubes you pick up from the rack — rather
+      than as a scattered subset.
+    </li>
+    <li>
+      <strong>Subjects should not be split.</strong> A subject with a serum and a CSF draw, or two
+      longitudinal draws, is kept whole on one plate so that a within-subject comparison is never
+      also a between-plate comparison.
+    </li>
+  </ul>
+</section>
+
+<section id="terms">
+  <h2><span class="num">2</span>Terms used precisely</h2>
+  <p class="lede">Five words that mean something specific here.</p>
+  <dl class="terms">
+    <div>
+      <dt>sample</dt>
+      <dd>One row of the manifest — one tube, identified by <code>tiu_id</code>.</dd>
+    </div>
+    <div>
+      <dt>unit</dt>
+      <dd>
+        What the dealer actually moves: one sample, or all of a subject's samples when
+        <em>keep subjects together</em> is on. Units are indivisible — this is the single biggest
+        source of imperfect balance, and section 11 says why.
+      </dd>
+    </div>
+    <div>
+      <dt>group</dt>
+      <dd>
+        The stratification key — cohort by default, or diagnosis, sample type, sex, or the
+        manifest's own <code>dither_group</code> column. This is the variable the planner balances.
+      </dd>
+    </div>
+    <div>
+      <dt>chunk</dt>
+      <dd>
+        A set of <em>replicates</em> adjacent wells that one sample occupies — normally a
+        side-by-side pair such as <code>A1</code>+<code>A2</code>. Chunks are the unit of plate
+        capacity; a plate's capacity is counted in chunks, not wells.
+      </dd>
+    </div>
+    <div>
+      <dt>window</dt>
+      <dd>
+        A consecutive block of plates across which each group is balanced — the "dither across
+        <em>N</em> plates" setting. A window of 4 balances each cohort across plates 1–4, then
+        across 5–8.
+      </dd>
+    </div>
+  </dl>
+</section>
+
+<section id="eligible">
+  <h2><span class="num">3</span>What gets dealt, and what is held back</h2>
+  <p class="lede">The planner deliberately refuses to place several categories of sample.</p>
+
+  <p>Of the manifest, only these are dealt automatically:</p>
+  <ul>
+    <li><strong>Serum, CSF and plasma</strong> — after type normalisation, so <code>"Serum "</code>, <code>Plasma (EDTA)</code> and <code>CSF (post-LP)</code> all qualify.</li>
+  </ul>
+  <p>Everything else is held back, each for its own reason:</p>
+  <ul>
+    <li><strong>Controls and mAbs</strong> are never auto-filled. They belong in the reserved control area, which is placed by template rather than dealt — their position is a deliberate choice, not a consequence of sample count.</li>
+    <li><strong>Bridging samples</strong> (marked <code>repeat_across_plates</code>) are placed <em>before</em> the pool competes for wells, once per target plate, so the batch-correction anchor is never crowded out by ordinary samples.</li>
+    <li><strong>Samples already on a plate</strong> are skipped, so a hand-placed layout is preserved and can be completed by autofill rather than overwritten.</li>
+    <li><strong>Samples excluded at the volume pre-flight</strong> are not planned at all; those reduced to a singlet are planned normally but written into one well of their chunk, leaving the partner deliberately empty.</li>
+  </ul>
+  <div class="note">
+    <p>
+      Held-back samples still consume capacity. A bridge on every plate costs one chunk per plate,
+      and the plate-count calculation subtracts that <em>before</em> deciding how many plates the run
+      needs — otherwise the last plate silently overflows.
+    </p>
+  </div>
+</section>
+
+<section id="pipeline">
+  <h2><span class="num">4</span>The pipeline</h2>
+  <p class="lede">Seven stages, each of which can only narrow what the next one sees.</p>
+
+  <figure class="fig">
+    <div class="fig-frame">
+      <svg viewBox="0 0 980 300" role="img" aria-label="Seven-stage pipeline: the manifest is filtered to eligible samples, grouped into indivisible units, sorted into stratification groups, allocated across plate windows by quota, dealt to plates as contiguous runs, ordered within each plate, and finally written into adjacent well chunks.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+        <g font-family="DM Sans, sans-serif" fill="currentColor">
+
+          <!-- row 1 -->
+          <g>
+            <rect x="8" y="40" width="132" height="54" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <text x="74" y="63" text-anchor="middle" font-size="13" font-weight="700">Manifest</text>
+            <text x="74" y="80" text-anchor="middle" font-size="11.5" opacity=".62">218 rows</text>
+          </g>
+          <line x1="140" y1="67" x2="196" y2="67" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="168" y="58" text-anchor="middle" font-size="10.5" opacity=".62">filter</text>
+
+          <g>
+            <rect x="200" y="40" width="132" height="54" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <text x="266" y="63" text-anchor="middle" font-size="13" font-weight="700">Eligible</text>
+            <text x="266" y="80" text-anchor="middle" font-size="11.5" opacity=".62">200 samples</text>
+          </g>
+          <line x1="332" y1="67" x2="388" y2="67" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="360" y="58" text-anchor="middle" font-size="10.5" opacity=".62">by subject</text>
+
+          <g>
+            <rect x="392" y="40" width="132" height="54" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <text x="458" y="63" text-anchor="middle" font-size="13" font-weight="700">Units</text>
+            <text x="458" y="80" text-anchor="middle" font-size="11.5" opacity=".62">102 indivisible</text>
+          </g>
+          <line x1="524" y1="67" x2="580" y2="67" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="552" y="58" text-anchor="middle" font-size="10.5" opacity=".62">by cohort</text>
+
+          <g>
+            <rect x="584" y="40" width="132" height="54" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <text x="650" y="63" text-anchor="middle" font-size="13" font-weight="700">Groups</text>
+            <text x="650" y="80" text-anchor="middle" font-size="11.5" opacity=".62">5 queues</text>
+          </g>
+
+          <!-- elbow down to row 2 -->
+          <path d="M 716 67 L 758 67 L 758 152 L 716 152" fill="none" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+
+          <!-- row 2 (right to left) -->
+          <g>
+            <rect x="584" y="125" width="132" height="54" rx="4" fill="none" stroke="var(--d1)" stroke-width="1.6"/>
+            <text x="650" y="148" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">Quota</text>
+            <text x="650" y="165" text-anchor="middle" font-size="11.5" fill="var(--d1)" opacity=".85">per window</text>
+          </g>
+          <line x1="584" y1="152" x2="528" y2="152" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="556" y="143" text-anchor="middle" font-size="10.5" opacity=".62">deal</text>
+
+          <g>
+            <rect x="392" y="125" width="132" height="54" rx="4" fill="none" stroke="var(--d1)" stroke-width="1.6"/>
+            <text x="458" y="148" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">Plates</text>
+            <text x="458" y="165" text-anchor="middle" font-size="11.5" fill="var(--d1)" opacity=".85">contiguous runs</text>
+          </g>
+          <line x1="392" y1="152" x2="336" y2="152" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="364" y="143" text-anchor="middle" font-size="10.5" opacity=".62">sort</text>
+
+          <g>
+            <rect x="200" y="125" width="132" height="54" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <text x="266" y="148" text-anchor="middle" font-size="13" font-weight="700">Order</text>
+            <text x="266" y="165" text-anchor="middle" font-size="11.5" opacity=".62">within plate</text>
+          </g>
+          <line x1="200" y1="152" x2="144" y2="152" stroke="currentColor" stroke-width="1.2" marker-end="url(#ar)"/>
+          <text x="172" y="143" text-anchor="middle" font-size="10.5" opacity=".62">chunks</text>
+
+          <g>
+            <rect x="8" y="125" width="132" height="54" rx="4" fill="none" stroke="currentColor" stroke-width="1.2"/>
+            <text x="74" y="148" text-anchor="middle" font-size="13" font-weight="700">Wells</text>
+            <text x="74" y="165" text-anchor="middle" font-size="11.5" opacity=".62">400 assigned</text>
+          </g>
+
+          <!-- held back: routed through the gaps between box columns -->
+          <g opacity=".78">
+            <path d="M 266 94 L 266 110 L 170 110 L 170 232" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+            <rect x="54" y="232" width="232" height="46" rx="4" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="170" y="251" text-anchor="middle" font-size="11.5" font-weight="700">Held back — placed by hand</text>
+            <text x="170" y="267" text-anchor="middle" font-size="11">10 mAb · 8 bead-only controls</text>
+          </g>
+          <g opacity=".78">
+            <path d="M 650 94 L 650 110 L 554 110 L 554 232" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+            <rect x="438" y="232" width="232" height="46" rx="4" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="3 3"/>
+            <text x="554" y="251" text-anchor="middle" font-size="11.5" font-weight="700">Bridges — placed first</text>
+            <text x="554" y="267" text-anchor="middle" font-size="11">one chunk reserved per plate</text>
+          </g>
+
+          <text x="800" y="70" font-size="11.5" opacity=".62">Stages 1–4 decide</text>
+          <text x="800" y="87" font-size="12" font-weight="700">which plate</text>
+          <text x="800" y="148" font-size="11.5" opacity=".62">Stages 5–7 decide</text>
+          <text x="800" y="165" font-size="12" font-weight="700">which well</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Figure 1.</b> Counts are from the reference run. The two decisions are strictly separated:
+      nothing in stages 5–7 can move a sample to a different plate, so changing the within-plate
+      ordering never disturbs the balance achieved in stages 1–4.
+    </figcaption>
+  </figure>
+</section>
+
+<section id="units">
+  <h2><span class="num">5</span>Units, groups and order</h2>
+
+  <h3>Units are built first, and never split</h3>
+  <p>
+    With <em>keep subjects together</em> on, every sample sharing a <code>subject_id</code> becomes one
+    unit. A sample with no subject id becomes its own unit. When sample types are being kept off the
+    same plate, the key becomes <code>subject_id + sample_type</code> — a subject with both a serum
+    and a CSF draw cannot be whole on one plate <em>and</em> typed apart, so the tool holds the
+    subject together within each type and says so in the preview.
+  </p>
+  <p>
+    In the reference run, 200 eligible samples collapse to <strong>102 units</strong>. The dealer
+    from here on moves units, not samples, which is what makes a subject's draws inseparable.
+  </p>
+
+  <h3>Groups are queued in manifest order</h3>
+  <p>
+    Units are bucketed by the stratification key. The group order is <em>first appearance in the
+    manifest</em> — not alphabetical, not by size — so "cohort A, then cohort B" on the plate means
+    what it says in the spreadsheet. Within a group, units keep manifest order unless
+    <em>randomise sample order</em> is on, in which case they are shuffled with the seeded generator.
+  </p>
+  <div class="note">
+    <p>
+      Shuffling within a group is what turns each plate's share of a cohort from a
+      <em>consecutive block of the spreadsheet</em> into a <em>random subset of it</em>. Without it,
+      plate 1 gets the first-enrolled patients and plate 5 the last — which matters if enrolment
+      order tracks anything, such as season, site, or disease stage at recruitment.
+    </p>
+  </div>
+</section>
+
+<section id="windows">
+  <h2><span class="num">6</span>Windows and quotas</h2>
+  <p class="lede">This is the stage that produces the balance.</p>
+
+  <h3>How many plates the run uses</h3>
+  <p>
+    Dithering across more plates than the samples need would leave half-empty plates behind, so the
+    planner first walks the plate list accumulating capacity — minus each plate's bridge load —
+    until the demand is met. Those become the <strong>active</strong> plates; anything beyond is held
+    as <strong>reserve</strong>, receives no quota, and is only reached by genuine overflow. In the
+    reference run, 102 units need 5 of the 8 available plates.
+  </p>
+
+  <h3>Quota by largest remainder</h3>
+  <p>
+    The active plates are cut into windows of the requested size (4 by default, giving windows
+    <code>[1,2,3,4]</code> and <code>[5]</code>). Each group's total demand is then divided across the
+    windows in proportion to window capacity, using largest-remainder apportionment — the same method
+    used to allocate legislative seats, chosen because it distributes whole indivisible things
+    without accumulating rounding drift:
+  </p>
+
+  <figure class="code">
+<pre><code>function apportion(total, weights) {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (sum &lt;= 0 || total &lt;= 0) return weights.map(() =&gt; 0);
+  const exact = weights.map(w =&gt; (total * w) / sum);   // fair share, fractional
+  const base  = exact.map(Math.floor);                 // whole part
+  let rem = total - base.reduce((a, b) =&gt; a + b, 0);   // seats still to give
+  const byFraction = exact
+    .map((e, i) =&gt; ({ i, f: e - Math.floor(e) }))
+    .sort((a, b) =&gt; b.f - a.f || a.i - b.i);           // largest remainder first
+  for (let k = 0; k &lt; byFraction.length &amp;&amp; rem &gt; 0; k++, rem--) base[byFraction[k].i]++;
+  return base;
+}</code></pre>
+    <figcaption>
+      <b>Ties break by index</b>, not at random — two windows with identical remainders always
+      resolve the same way, which is part of what makes a layout reproducible from its seed.
+    </figcaption>
+  </figure>
+
+  <figure class="fig">
+    <div class="fig-frame">
+      <svg viewBox="0 0 900 268" role="img" aria-label="A cohort of 110 wells is apportioned across two windows in proportion to their capacity, 88 wells to the four-plate window and 22 to the single-plate window, then dealt within each window in proportion to each plate's remaining room.">
+        <g font-family="DM Sans, sans-serif" fill="currentColor">
+          <text x="0" y="16" font-size="12.5" font-weight="700">MS-Relapsing · 110 wells to place</text>
+
+          <!-- window boxes -->
+          <rect x="0" y="34" width="466" height="118" rx="5" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".45"/>
+          <text x="12" y="53" font-size="11" opacity=".62">WINDOW 1 · plates 1–4 · capacity 160 chunks</text>
+          <rect x="490" y="34" width="140" height="118" rx="5" fill="none" stroke="currentColor" stroke-width="1.2" opacity=".45"/>
+          <text x="502" y="53" font-size="11" opacity=".62">WINDOW 2 · plate 5</text>
+
+          <!-- plate bars, window 1 -->
+          <g>
+            <rect x="16" y="68" width="98" height="30" rx="3" fill="var(--d1)" opacity=".18"/>
+            <rect x="16" y="68" width="98" height="30" rx="3" fill="none" stroke="var(--d1)" stroke-width="1.3"/>
+            <text x="65" y="88" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">24</text>
+            <text x="65" y="115" text-anchor="middle" font-size="11" opacity=".62">plate 1</text>
+          </g>
+          <g>
+            <rect x="128" y="68" width="98" height="30" rx="3" fill="var(--d1)" opacity=".18"/>
+            <rect x="128" y="68" width="98" height="30" rx="3" fill="none" stroke="var(--d1)" stroke-width="1.3"/>
+            <text x="177" y="88" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">20</text>
+            <text x="177" y="115" text-anchor="middle" font-size="11" opacity=".62">plate 2</text>
+          </g>
+          <g>
+            <rect x="240" y="68" width="98" height="30" rx="3" fill="var(--d1)" opacity=".18"/>
+            <rect x="240" y="68" width="98" height="30" rx="3" fill="none" stroke="var(--d1)" stroke-width="1.3"/>
+            <text x="289" y="88" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">24</text>
+            <text x="289" y="115" text-anchor="middle" font-size="11" opacity=".62">plate 3</text>
+          </g>
+          <g>
+            <rect x="352" y="68" width="98" height="30" rx="3" fill="var(--d1)" opacity=".18"/>
+            <rect x="352" y="68" width="98" height="30" rx="3" fill="none" stroke="var(--d1)" stroke-width="1.3"/>
+            <text x="401" y="88" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">20</text>
+            <text x="401" y="115" text-anchor="middle" font-size="11" opacity=".62">plate 4</text>
+          </g>
+          <!-- plate bar, window 2 -->
+          <g>
+            <rect x="506" y="68" width="98" height="30" rx="3" fill="var(--d1)" opacity=".18"/>
+            <rect x="506" y="68" width="98" height="30" rx="3" fill="none" stroke="var(--d1)" stroke-width="1.3"/>
+            <text x="555" y="88" text-anchor="middle" font-size="13" font-weight="700" fill="var(--d1)">22</text>
+            <text x="555" y="115" text-anchor="middle" font-size="11" opacity=".62">plate 5</text>
+          </g>
+
+          <text x="16" y="140" font-size="11.5" opacity=".72">quota 88 wells — 160/200 of capacity</text>
+          <text x="506" y="140" font-size="11.5" opacity=".72">quota 22 wells</text>
+
+          <!-- annotation -->
+          <line x1="233" y1="152" x2="233" y2="186" stroke="currentColor" stroke-width="1" opacity=".45"/>
+          <line x1="555" y1="152" x2="555" y2="186" stroke="currentColor" stroke-width="1" opacity=".45"/>
+          <text x="0" y="206" font-size="12" opacity=".8">Step 1 — apportion 110 across windows by capacity → 88 + 22</text>
+          <text x="0" y="228" font-size="12" opacity=".8">Step 2 — inside each window, apportion again by each plate's remaining room</text>
+          <text x="0" y="250" font-size="12" opacity=".8">Step 3 — place whole units until the plate's target is reached; carry the miss forward</text>
+        </g>
+      </svg>
+    </div>
+    <figcaption>
+      <b>Figure 2.</b> The largest cohort in the reference run, as actually dealt. The 24/20/24/20
+      pattern is not drift — it is what apportioning 88 wells across four plates yields once units of
+      2 and 4 wells are placed whole. Every plate lands within one unit of its proportional share.
+    </figcaption>
+  </figure>
+</section>
+
+<section id="deal">
+  <h2><span class="num">7</span>Dealing a group across a window</h2>
+  <p class="lede">Where the theory meets indivisible units.</p>
+
+  <p>
+    Within a window the groups are dealt one after another in manifest order — all of cohort A, then
+    all of cohort B — so each plate receives a solid run of each cohort. The quota is expressed in
+    wells, but units are placed <em>whole</em>, so a plate can only land exactly on target when the
+    target happens to be reachable from the unit sizes to hand. Two corrections stop that error from
+    compounding down the window:
+  </p>
+
+  <figure class="code">
+<pre><code>function dealRun(win, list) {
+  const room    = win.map(p =&gt; capacity[p] - used[p]);
+  const need    = list.reduce((a, u) =&gt; a + u.samples.length, 0);
+  const targets = apportion(Math.min(need, free), room);
+
+  let i = 0, carry = 0;
+  win.forEach((p, k) =&gt; {
+    let want = targets[k] - carry;              // last plate's miss, repaid here
+    while (i &lt; list.length &amp;&amp; capacity[p] - used[p] &gt;= list[i].samples.length) {
+      if (want &lt;= 0) break;
+      const size = list[i].samples.length;
+      if (size - want &gt; want) break;            // overshoot worse than undershoot → stop
+      want -= size;
+      placeUnit(p, list[i]);
+      i++;
+    }
+    carry = -want;                              // &gt;0 overshot, &lt;0 undershot
+  });
+  return list.slice(i);                         // whatever did not fit
+}</code></pre>
+    <figcaption>
+      <b>Error diffusion.</b> If plate 1 overshoots its target by 2 wells, plate 2's target drops by
+      2. Without this, every plate rounds the same direction and the last plate of a window absorbs
+      the accumulated excess. <b>The overshoot guard</b> stops before a unit that would miss high by
+      more than leaving it out would miss low, so each plate lands on the nearer side of its share.
+    </figcaption>
+  </figure>
+
+  <h3>Overflow is packed, not spread</h3>
+  <p>
+    Units a window could not take flow into the next window. Anything still in hand at the end is
+    placed on the <em>first plate with room</em>, rather than apportioned across all remaining
+    capacity. Spreading a six-well remainder evenly is technically the most even thing to do and the
+    worst thing to hand a lab: it leaves two wells stranded on plate 8 and a whole plate that has to
+    be run for them. Packing keeps the tail compact.
+  </p>
+</section>
+
+<section id="wells">
+  <h2><span class="num">8</span>From units to wells</h2>
+  <p class="lede">Which plate is now settled; this stage only decides where on it.</p>
+
+  <p>
+    Each plate's wells are enumerated in a canonical slot order set by the replicate layout —
+    for side-by-side duplicates filling downward, that is <code>A1, A2, B1, B2 … H1, H2</code>, then
+    the next column pair. The order is cut into chunks of <em>replicates</em> wells, and a chunk is
+    usable only if <strong>every</strong> well in it is free and outside the control area.
+  </p>
+  <div class="note">
+    <p>
+      That all-or-nothing test is what guarantees replicates are physically adjacent, even on a plate
+      someone has already part-filled by hand. A chunk with one well taken is discarded rather than
+      half-used — its free wells are reported as <em>stranded</em> in the preview rather than silently
+      filled, because using them would put two different samples in one duplicate pair.
+    </p>
+  </div>
+
+  <h3>Ordering within the plate</h3>
+  <p>Units are sorted before being written to chunks, by four keys in order:</p>
+  <ol>
+    <li><strong>Pinned first</strong> — bridges hold their fixed chunk.</li>
+    <li><strong>Sample type</strong> — a plate must never interleave preps, since serum and CSF are handled differently at the bench.</li>
+    <li><strong>Group rank</strong> — the block order, which is where the three <em>well placement</em> options differ.</li>
+    <li><strong>Manifest order</strong>, then label, as a deterministic tiebreak.</li>
+  </ol>
+  <p>
+    The group rank is fixed under <em>ordered</em>, a seeded per-plate permutation under
+    <em>blocks shuffled</em>, and under <em>edge-balanced</em> is chosen by scoring 60 seeded candidate
+    orderings against each plate's actual edge-well exposure and keeping the best. The plain manifest
+    order is always among the candidates, so balancing can never do worse than not balancing.
+  </p>
+</section>
+
+<section id="seed">
+  <h2><span class="num">9</span>Reproducibility</h2>
+  <p class="lede">Same seed, same inputs, same options — same layout, byte for byte.</p>
+
+  <p>
+    All randomness comes from a seeded <strong>mulberry32</strong> generator over an FNV-style hash of
+    the seed string. No use of <code>Math.random()</code> anywhere in the planner. Independent
+    decisions draw from independently derived streams, so that changing one does not shift the others:
+  </p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Stream</th><th>Derived from</th><th>Controls</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>main</td><td><code>seed</code></td><td>sample-order shuffle, scatter well order</td></tr>
+        <tr><td>blocks</td><td><code>seed|blocks|<em>plate</em></code></td><td>which column block each group gets</td></tr>
+        <tr><td>edge</td><td><code>seed|edge|<em>plate</em></code></td><td>edge-balance candidate orderings</td></tr>
+        <tr><td>bridge</td><td><code>seed|bridge|<em>plate</em></code></td><td>rotated bridge positions</td></tr>
+        <tr><td>control</td><td><code>seed|ctl|<em>plate</em></code></td><td>rotated control-block offset</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    The Design Log records the seed alongside the designer version, the build commit, the state schema
+    version, and a fingerprint of the manifest's <code>tiu_id</code> order. Those five together are
+    what let a reader confirm they are regenerating from identical inputs with identical code, rather
+    than from something that merely looks the same. Re-opening an exported workbook restores the seed
+    and every option from a hidden state sheet, so a design is reproducible from the file itself and
+    not only from someone's notes.
+  </p>
+</section>
+
+<section id="measured">
+  <h2><span class="num">10</span>Measured behaviour</h2>
+  <p class="lede">
+    The reference manifest — 218 samples, 102 subjects, 7 cohorts — stratified on cohort, window 4,
+    seed 20260710.
+  </p>
+
+  <div class="scroll">
+    <table>
+      <caption class="visually-hidden"></caption>
+      <thead>
+        <tr>
+          <th>Cohort</th><th>Plate 1</th><th>Plate 2</th><th>Plate 3</th><th>Plate 4</th><th>Plate 5</th><th>Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td><span class="swatch" style="background:var(--d1)"></span>MS-Relapsing</td><td>24</td><td>20</td><td>24</td><td>20</td><td>22</td><td>110</td></tr>
+        <tr><td><span class="swatch" style="background:var(--d2)"></span>MS-Progressive</td><td>20</td><td>16</td><td>20</td><td>16</td><td>18</td><td>90</td></tr>
+        <tr><td><span class="swatch" style="background:var(--d3)"></span>Healthy-Controls</td><td>16</td><td>16</td><td>16</td><td>16</td><td>16</td><td>80</td></tr>
+        <tr><td><span class="swatch" style="background:var(--d4)"></span>Lupus-SLE</td><td>12</td><td>16</td><td>12</td><td>16</td><td>14</td><td>70</td></tr>
+        <tr><td><span class="swatch" style="background:var(--d5)"></span>NMO-Spectrum</td><td>8</td><td>12</td><td>8</td><td>12</td><td>10</td><td>50</td></tr>
+        <tr class="total"><td>Wells</td><td>80</td><td>80</td><td>80</td><td>80</td><td>80</td><td>400</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p>
+    Worst deviation of any cohort's plate share from its run-wide share: <strong>2.5 percentage
+    points</strong>. Every plate carries every cohort. The 24/20 alternation is the visible signature
+    of whole units meeting a fractional quota.
+  </p>
+
+  <h3>What the stratification does not cover</h3>
+  <p>
+    The tool reports every covariate the manifest carries, not just the one balanced on. Stratified on
+    cohort, the same run gives:
+  </p>
+  <div class="scroll">
+    <table>
+      <thead>
+        <tr><th>Covariate</th><th>Max deviation</th><th>χ²</th><th>df</th><th>Beyond 10 pp</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Cohort <em>(stratified)</em></td><td class="ok">2.5 pp</td><td>4.4</td><td>16</td><td>no</td></tr>
+        <tr><td>Diagnosis</td><td class="ok">2.5 pp</td><td>4.4</td><td>16</td><td>no</td></tr>
+        <tr><td>Sex</td><td>6.5 pp</td><td>4.3</td><td>4</td><td>no</td></tr>
+        <tr><td>Collection date quartile</td><td>10.0 pp</td><td>15.1</td><td>12</td><td>no</td></tr>
+        <tr><td>Age quartile</td><td class="flag">11.0 pp</td><td>21.7</td><td>12</td><td>yes</td></tr>
+        <tr><td>Freeze–thaw bucket</td><td class="flag">11.5 pp</td><td>18.2</td><td>8</td><td>yes</td></tr>
+        <tr><td>Sample type</td><td class="flag">16.5 pp</td><td>14.9</td><td>4</td><td>yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <div class="note limit">
+    <p>
+      The χ² is reported as a descriptive measure of spread across plate × level, <strong>not</strong>
+      as a hypothesis test. The plates are a design, not a random sample, and the cells are not
+      independent draws; a p-value here would be reading meaning into it that is not there.
+    </p>
+  </div>
+
+  <h3>Position</h3>
+  <p>
+    Contiguous cohort blocks balance cohort <em>across</em> plates but confound it <em>with</em>
+    column position. Edge exposure — the share of a group's wells in row A/H or column 1/12 — under
+    the default ordering runs from 16.0% to 43.6% against a run-wide 32.5%, a spread of
+    <strong>16.5 pp</strong>. Selecting <em>edge-balanced</em> block order brings the worst deviation
+    to <strong>3.1 pp</strong> without moving any sample to a different plate and without breaking
+    block contiguity.
+  </p>
+</section>
+
+<section id="limits">
+  <h2><span class="num">11</span>What the algorithm does not do</h2>
+  <p class="lede">Limits worth stating before a layout is defended in a methods section.</p>
+
+  <ul>
+    <li>
+      <strong>Stratification is single-factor.</strong> One key is balanced; everything else is left to
+      chance and merely reported. There is no multi-factor optimiser.
+    </li>
+    <li>
+      <strong>Quotas are only reachable through whole units.</strong> A subject contributing 4 wells
+      cannot half-satisfy a target of 2. Deviations of one unit are structural, not a defect —
+      they are the price of never splitting a subject.
+    </li>
+    <li>
+      <strong>Stratifying on a two-level covariate buys less than expected.</strong> On the reference
+      manifest, stratifying on sex leaves sex <em>worse</em> balanced (8.5 pp) than stratifying on
+      cohort does (6.5 pp), because whole-subject units constrain the achievable split more than the
+      choice of key does. Check the diagnostics rather than assuming.
+    </li>
+    <li>
+      <strong>A run can end with a small remainder plate.</strong> Packing keeps it to one, but a
+      four-well tail is possible and that plate is not a meaningful unit for balance — the diagnostics
+      exclude plates under 8 wells from the headline deviation for exactly that reason.
+    </li>
+    <li>
+      <strong>Nothing here randomises across plates independently of the blocks.</strong> Position and
+      cohort are decoupled only to the degree the chosen well-placement option allows.
+    </li>
+  </ul>
+</section>
+
+<section id="verify">
+  <h2><span class="num">12</span>How the behaviour is verified</h2>
+
+  <p>
+    Every claim above is pinned by an automated test; the suite runs 159 tests over the planner and
+    exports. Three layers:
+  </p>
+  <ul>
+    <li>
+      <strong>Golden layouts.</strong> Four reference configurations are stored well-by-well. Any change
+      to the planner that alters them fails the suite and has to be justified deliberately, rather than
+      slipping through as an unnoticed side effect.
+    </li>
+    <li>
+      <strong>Invariants,</strong> asserted over the golden configurations and 100 fuzzed manifests
+      (10–2000 samples, 1–15 groups, 1–20 plates): every placed sample occupies exactly
+      <em>replicates</em> wells; replicate wells are adjacent under the selected layout; no reserved
+      well is ever written by autofill; no subject is split when kept together; placed + unplaced +
+      stranded accounts for every eligible sample; no well is written twice; same seed gives an
+      identical plan and a different seed does not; controls never enter a plan.
+    </li>
+    <li>
+      <strong>Validate layout,</strong> in the tool itself, runs the same rules against the live design
+      including anything placed or edited by hand, and names the offending wells rather than returning
+      a verdict.
+    </li>
+  </ul>
+
+  <p>
+    To reproduce a layout from an exported workbook: open it in the designer, which restores the seed,
+    window, grouping and every option from the hidden state sheet, then re-run autofill on an empty
+    plate set. The Design Log in the export carries the same parameters in readable form.
+  </p>
+</section>
+
+<footer>
+  <p>
+    Generated from the <code>computeAutofillPlan</code> implementation in designer v4.3.0. Figures and
+    tables are measured output from the reference manifest, not illustrative. Where this document and
+    the code disagree, the code is correct — and the disagreement is a bug worth reporting.
+  </p>
+</footer>
+
+</main>
+</div>
+</div>
