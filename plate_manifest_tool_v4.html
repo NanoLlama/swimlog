@@ -1559,7 +1559,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '8dc0619';
+const DESIGNER_BUILD = '17948df';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -1598,7 +1598,27 @@ const OKABE_ITO = [
   '#0072b2', '#d55e00', '#009e73', '#cc79a7',
   '#e69f00', '#56b4e9', '#8a6a00', '#333333'
 ];
-const COHORT_GLYPHS = ['●', '▲', '■', '◆', '★', '▼', '⬢', '✚'];
+// Twelve glyphs, then lettered markers. Two constraints shaped the set:
+//
+// They have to survive Excel. These now go into the Lab Plate Map, which gets
+// printed and carried to a bench, so every glyph is drawn from Geometric Shapes
+// (U+25xx) plus the star pair — the ranges core fonts actually carry. The
+// earlier set used ⬢ (U+2B22) and ✚ (U+271A), which render on screen but fall
+// outside Calibri and risk printing as an empty box.
+//
+// They have to stay distinct in mono. Filled shapes come first, then their
+// outline counterparts: filled-versus-hollow is the strongest contrast left
+// once colour is gone, so a run with seven cohorts gets seven marks nobody
+// could confuse at 9pt.
+const COHORT_GLYPHS = ['●', '▲', '■', '◆', '★', '▼', '○', '△', '□', '◇', '☆', '▽'];
+
+// Past the glyph set, a letter. A 13th cohort is rare, and an unmistakable "M"
+// beats a symbol so exotic it may not render at all.
+function glyphAt(i) {
+  if (i < COHORT_GLYPHS.length) return COHORT_GLYPHS[i];
+  const n = i - COHORT_GLYPHS.length;
+  return n < 26 ? String.fromCharCode(65 + n) : String(i + 1);
+}
 let colourSafeMode = false;
 let cohortGlyphMap = {};
 
@@ -2402,7 +2422,7 @@ function assignCohortColors() {
   cohortGlyphMap = {};
   cohorts.forEach((c, i) => {
     cohortColorMap[c] = palette[i % palette.length];
-    cohortGlyphMap[c] = COHORT_GLYPHS[i % COHORT_GLYPHS.length];
+    cohortGlyphMap[c] = glyphAt(i);
   });
   sampleColorMap = {};
   samples.forEach(s => {
@@ -7513,6 +7533,13 @@ function buildPlateSheet(field) {
           if (tagWells) {
             val = `${val} [${(sObj && sObj.sample_type) || 'unspecified'}]`;
           }
+          // The bench reads this map on paper, where the palette is the first
+          // thing lost. In colour-safe mode the cohort's glyph is carried into
+          // the cell text so the printed map keeps the shape channel too.
+          if (isLab) {
+            const g = glyphFor(sObj);
+            if (g) val = `${g} ${val}`;
+          }
           data[dataRow][dataCol] = val;
           // tiu_id as well as input_id: colours key on tiu_id since ticket 1.1,
           // and a target carrying only input_id silently fell back to grey.
@@ -7542,7 +7569,8 @@ function buildPlateSheet(field) {
       used.sort().forEach(c => {
         legendRows.push({ r: data.length, cohort: c });
         // swatch in column A, name in B — keeps column A narrow for row letters
-        data.push(['', c || 'No cohort']);
+        const g = colourSafeMode && c ? (cohortGlyphMap[c] || '') : '';
+        data.push(['', (g ? g + '  ' : '') + (c || 'No cohort')]);
       });
     }
   }
