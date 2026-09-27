@@ -15,6 +15,10 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   /* webfonts omitted: this build makes no network requests */
 
   :root {
+    /* One multiplier for every size in the legibility block below. A bench
+       laptop and a 27-inch monitor do not want the same answer, and the person
+       reading it is the one who knows which. */
+    --ui: 1;
     --bg: #f0ede6;
     --surface: #faf8f4;
     --surface2: #edeae2;
@@ -276,11 +280,16 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     box-shadow: 0 1px 4px rgba(0,0,0,0.07);
   }
 
+  /* The plate is sized from the space actually available, not from a fixed
+     44px that happened to fit one laptop. fitPlateToViewport() measures and
+     sets --well / --wellh / --plate-gap; these are the fallbacks for the first
+     paint and for anything that runs before the measurement. */
   .plate-grid {
     display: grid;
-    grid-template-columns: 36px repeat(12, minmax(44px, 1fr));
-    gap: 8px;
+    grid-template-columns: var(--rowhdr, 30px) repeat(12, var(--well, 44px));
+    gap: var(--plate-gap, 8px);
     user-select: none;
+    justify-content: center;
   }
 
   .plate-grid .col-header, .plate-grid .row-header {
@@ -291,13 +300,14 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     align-items: center;
     justify-content: center;
     font-weight: 500;
-    min-height: 44px;
+    min-height: 0;
   }
+  .plate-grid .col-header { height: var(--hdr, 22px); }
+  .plate-grid .row-header { height: var(--wellh, var(--well, 44px)); }
 
   .well {
-    aspect-ratio: 1;
-    min-width: 44px;
-    min-height: 44px;
+    width: var(--well, 44px);
+    height: var(--wellh, var(--well, 44px));
     border-radius: 50%;
     border: 2px solid var(--border);
     background: var(--empty);
@@ -995,8 +1005,11 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     min-width: 0; overflow: hidden; white-space: nowrap;
   }
   .file-chip .nm {
-    overflow: hidden; text-overflow: ellipsis; max-width: 200px; display: inline-block;
+    overflow: hidden; text-overflow: ellipsis; max-width: 220px; display: inline-block;
     vertical-align: bottom;
+    /* As a flex item it was shrinking to ~44px, so the ellipsis ate the whole
+       name. A floor keeps enough of it to recognise; the title has the rest. */
+    min-width: 92px; flex: 0 1 auto;
   }
   .file-chip .sep { color: #8d877a; }
   .file-chip .nm { font-weight: 500; }
@@ -1128,10 +1141,9 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
 
   /* Labelled wells: the plate stops being a colour field and starts being
      readable at arm's length, which is how it is read at the bench. */
-  .plate-grid.detail { grid-template-columns: 22px repeat(12, minmax(50px, 1fr)); gap: 5px; }
   .plate-grid.detail .well {
-    aspect-ratio: auto; height: 48px; min-width: 0; border-radius: 7px;
-    padding: 4px 5px; display: flex; flex-direction: column;
+    border-radius: 7px; padding: 4px 5px;
+    display: flex; flex-direction: column;
     align-items: stretch; justify-content: space-between;
     box-shadow: none; overflow: hidden;
   }
@@ -1399,40 +1411,40 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   .assignment-list { max-height: min(420px, 32vh); }
   .sample-list { max-height: min(520px, 46vh); }
 
-  /* ─── Legibility floor ────────────────────────────────────────────────────
+  /* ─── Legibility floor, scaled by --ui ────────────────────────────────────────────────────
      Sizes below ~11px are fine on a design canvas and not on a bench laptop.
      This raises the floor everywhere the text is prose or a label; the only
      things left smaller are the glyphs inside a 44px well. */
-  .file-chip { font-size: 12px; }
-  .toolbar { font-size: 13px; }
-  .toolbar .btn, .seg button, .view-tabs button { font-size: 12.5px; }
-  .stepper .lbl, .stepper button { font-size: 13px; }
-  .af-eyebrow, .inspector .eyebrow { font-size: 11.5px; }
-  .dither-field .hint, .af-sec .hint, .af-sec label, .af-sec .dither-field .hint { font-size: 11.5px; }
-  .af-sec .toggle-wrap { font-size: 12.5px; }
-  .af-stat .l { font-size: 11.5px; }
-  .af-stat .v { font-size: 17px; }
-  .match-row .id { font-size: 12.5px; }
-  .match-row .meta { font-size: 11.5px; }
-  .match-row .hint { font-size: 11px; }
-  .legend, .legend-item { font-size: 12px; }
-  .plate-head .pd, .plate-head .pn { font-size: 12.5px; }
-  .plate-tab .n { font-size: 12px; }
-  .ov-kpi .l { font-size: 12px; }
-  .ov-kpi .v { font-size: 22px; }
-  .ov-card .nm { font-size: 13px; }
-  .ov-card .ct, .ov-card .st { font-size: 11.5px; }
-  .ov-facts div { font-size: 12.5px; }
-  .ov-legend, .ov-bars { font-size: 12px; }
-  .plate-grid .col-header, .plate-grid .row-header { font-size: 14px; }
-  .cohort-progress { font-size: 12.5px; }
-  .panel-header { font-size: 12.5px; }
+  .file-chip { font-size: calc(12px * var(--ui)); }
+  .toolbar { font-size: calc(13px * var(--ui)); }
+  .toolbar .btn, .seg button, .view-tabs button { font-size: calc(12.5px * var(--ui)); }
+  .stepper .lbl, .stepper button { font-size: calc(13px * var(--ui)); }
+  .af-eyebrow, .inspector .eyebrow { font-size: calc(11.5px * var(--ui)); }
+  .dither-field .hint, .af-sec .hint, .af-sec label, .af-sec .dither-field .hint { font-size: calc(11.5px * var(--ui)); }
+  .af-sec .toggle-wrap { font-size: calc(12.5px * var(--ui)); }
+  .af-stat .l { font-size: calc(11.5px * var(--ui)); }
+  .af-stat .v { font-size: calc(17px * var(--ui)); }
+  .match-row .id { font-size: calc(12.5px * var(--ui)); }
+  .match-row .meta { font-size: calc(11.5px * var(--ui)); }
+  .match-row .hint { font-size: calc(11px * var(--ui)); }
+  .legend, .legend-item { font-size: calc(12px * var(--ui)); }
+  .plate-head .pd, .plate-head .pn { font-size: calc(12.5px * var(--ui)); }
+  .plate-tab .n { font-size: calc(12px * var(--ui)); }
+  .ov-kpi .l { font-size: calc(12px * var(--ui)); }
+  .ov-kpi .v { font-size: calc(22px * var(--ui)); }
+  .ov-card .nm { font-size: calc(13px * var(--ui)); }
+  .ov-card .ct, .ov-card .st { font-size: calc(11.5px * var(--ui)); }
+  .ov-facts div { font-size: calc(12.5px * var(--ui)); }
+  .ov-legend, .ov-bars { font-size: calc(12px * var(--ui)); }
+  .plate-grid .col-header, .plate-grid .row-header { font-size: calc(14px * var(--ui)); }
+  .cohort-progress { font-size: calc(12.5px * var(--ui)); }
+  .panel-header { font-size: calc(12.5px * var(--ui)); }
 
   /* Wells are the one place a small size is structural rather than a choice —
      twelve of them have to fit across the plate. They get the extra size the
      layout can actually give them, and the hover punch-out carries the rest. */
-  .plate-grid.detail .well-label { font-size: 10.5px; }
-  .plate-grid.detail .well-sub { font-size: 9.5px; }
+  .plate-grid.detail .well-label { font-size: calc(10.5px * var(--ui)); }
+  .plate-grid.detail .well-sub { font-size: calc(9.5px * var(--ui)); }
 
   /* ─── Collapsing the sample list ──────────────────────────────────────────
      Reading a labelled plate wants width more than it wants the picking list. */
@@ -1472,6 +1484,66 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   /* The header must fit one line at laptop width. */
   .app-head h1, .app-head .sub { white-space: nowrap; }
   .app-head .sub { font-size: 11.5px; }
+  /* Under ~34px a truncated stub reads as a different sample; the colour and
+     the hover card do the work instead. */
+  .plate-grid.tiny .well-label { display: none; }
+  .plate-head { margin-bottom: 10px; }
+  .plate-head .pn { display: none; }
+  .ph-controls { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .plate-stats-line {
+    margin-top: 8px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap;
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted);
+  }
+  .plate-wrapper { padding: 16px 18px; }
+  /* On a short screen every row above the plate costs eight wells of height. */
+  @media (max-height: 840px) {
+    .plate-wrapper { padding: 12px 14px; }
+    .plate-head { margin-bottom: 8px; }
+    .app-head { padding: 10px 22px; }
+    .toolbar { padding-top: 7px; padding-bottom: 7px; }
+    .plate-tabs { padding-top: 6px; padding-bottom: 6px; }
+  }
+  html[data-density="compact"]  { --ui: 0.92; }
+  html[data-density="large"]    { --ui: 1.14; }
+  html[data-density="xlarge"]   { --ui: 1.28; }
+
+  .size-seg button {
+    font-family: 'DM Sans', sans-serif; min-width: 26px;
+  }
+  .size-seg button[data-size="compact"] { font-size: 11px; }
+  .size-seg button[data-size="normal"]  { font-size: 13px; }
+  .size-seg button[data-size="large"]   { font-size: 15px; }
+  .size-seg button[data-size="xlarge"]  { font-size: 17px; }
+  /* ─── Collapsible panels ───────────────────────────────────────────────────
+     A rail of three open panels is taller than any screen. Each header is its
+     own toggle, and what you closed stays closed next time. */
+  button.panel-header {
+    width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--border);
+    cursor: pointer; font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+  }
+  button.panel-header:hover { color: var(--text); }
+  .panel-header .dot { display: inline-block; }
+  .panel-header .chev { margin-left: auto; transition: transform 0.15s; font-size: 11px; }
+  .panel.collapsed .panel-header { border-bottom: 0; }
+  .panel.collapsed .panel-header .chev { transform: rotate(-90deg); }
+  .panel.collapsed > *:not(.panel-header) { display: none; }
+  /* ─── Sticky plate headers ────────────────────────────────────────────────
+     The plate is sized to fit, so it usually does not scroll — but at the
+     largest text size, on a short window, or at Labelled density it can. A1 and
+     H12 look identical once the numbers have scrolled away, so the headers stay.
+     The wrapper is the scroll context, which keeps the stickiness inside the
+     plate rather than letting it ride over the toolbar. */
+  .plate-wrapper { position: relative; overflow: auto; }
+  .plate-grid .col-header {
+    position: sticky; top: 0; z-index: 3;
+    background: var(--surface); border-radius: 3px;
+  }
+  .plate-grid .row-header {
+    position: sticky; left: 0; z-index: 2;
+    background: var(--surface); border-radius: 3px;
+  }
+  /* The corner sits above both, or the row letters slide under it. */
+  .plate-grid > .col-header:first-child { z-index: 4; left: 0; }
 </style>
 </head>
 <body>
@@ -1602,7 +1674,17 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
               style="border-color:var(--accent);background:var(--accent-light);color:var(--accent);font-weight:600;"
               onclick="openAutofillModal()">⚡ Autofill plates</button>
 
-      <details id="areaRow" style="margin-left:auto;position:relative;">
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+        <span style="color:var(--muted);">Text</span>
+        <div class="seg size-seg" id="sizeSeg" role="group" aria-label="Text size">
+          <button type="button" data-size="compact" onclick="setUiDensity('compact')" title="Compact text">A</button>
+          <button type="button" data-size="normal"  onclick="setUiDensity('normal')"  title="Normal text" aria-pressed="true">A</button>
+          <button type="button" data-size="large"   onclick="setUiDensity('large')"   title="Large text">A</button>
+          <button type="button" data-size="xlarge"  onclick="setUiDensity('xlarge')"  title="Largest text">A</button>
+        </div>
+      </div>
+
+      <details id="areaRow" style="position:relative;">
         <summary class="area-chip">
           Control area: <span id="controlAreaLabel" class="area-label"></span>
         </summary>
@@ -1648,7 +1730,8 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           </div>
         </div>
         <div class="panel">
-          <div class="panel-header"><div class="dot"></div> Input Samples</div>
+          <button type="button" class="panel-header" data-panel="samples" onclick="togglePanel('samples')"
+                  aria-expanded="true"><span class="dot"></span> Input Samples <span class="chev">▾</span></button>
           <div class="search-box">
             <input type="text" id="sampleSearch" placeholder="Search samples..." oninput="filterSamples()">
           </div>
@@ -1692,21 +1775,19 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         </div>
 
         <div class="plate-wrapper">
+          <!-- Identity and the two view switches on one line: the switches were
+               a row of their own, and a row above the plate costs eight wells
+               of height on a short screen. -->
           <div class="plate-head">
             <div class="pt">Plate <span id="plateHeadNum">1</span></div>
             <div class="pd" id="plateHeadDesc"></div>
-            <div class="pn" id="plateNeed"></div>
-          </div>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-4px 0 14px;">
-            <span style="font-size:11px;color:var(--muted);">Colour by</span>
-            <div class="seg" id="colourBySeg" role="group" aria-label="Colour wells by">
-              <button type="button" data-cb="cohort" aria-pressed="true"  onclick="setColourBy('cohort')">Cohort</button>
-              <button type="button" data-cb="type"   aria-pressed="false" onclick="setColourBy('type')">Sample type</button>
-              <button type="button" data-cb="index"  aria-pressed="false" onclick="setColourBy('index')">Index</button>
-              <button type="button" data-cb="volume" aria-pressed="false" onclick="setColourBy('volume')">Volume</button>
-            </div>
-            <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
-              <span style="font-size:11px;color:var(--muted);">Wells</span>
+            <div class="ph-controls">
+              <div class="seg" id="colourBySeg" role="group" aria-label="Colour wells by">
+                <button type="button" data-cb="cohort" aria-pressed="true"  onclick="setColourBy('cohort')">Cohort</button>
+                <button type="button" data-cb="type"   aria-pressed="false" onclick="setColourBy('type')">Type</button>
+                <button type="button" data-cb="index"  aria-pressed="false" onclick="setColourBy('index')">Index</button>
+                <button type="button" data-cb="volume" aria-pressed="false" onclick="setColourBy('volume')">Volume</button>
+              </div>
               <div class="seg" id="densitySeg" role="group" aria-label="Well size">
                 <button type="button" data-den="compact" aria-pressed="true"  onclick="setWellDensity('compact')">Compact</button>
                 <button type="button" data-den="detail"  aria-pressed="false" onclick="setWellDensity('detail')">Labelled</button>
@@ -1717,7 +1798,10 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           <div class="plate-progress">
             <div class="plate-progress-fill" id="progressFill" style="width:0%"></div>
           </div>
-          <div style="margin-top:8px; font-size:11px; color:var(--muted); text-align:center; font-family:'DM Mono',monospace;" id="plateStats"></div>
+          <div class="plate-stats-line">
+            <span id="plateStats"></span>
+            <span id="plateNeed"></span>
+          </div>
 
         <div class="legend" id="plateLegend"></div>
         </div>
@@ -1764,12 +1848,14 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         </div>
 
         <div class="panel" style="margin-bottom:14px;">
-          <div class="panel-header"><div class="dot" style="background:var(--accent)"></div> Cohort Progress</div>
+          <button type="button" class="panel-header" data-panel="cohort" onclick="togglePanel('cohort')"
+                  aria-expanded="true"><span class="dot" style="background:var(--accent)"></span> Cohort Progress <span class="chev">▾</span></button>
           <div class="cohort-progress" id="cohortProgress">
             <div class="empty-state">No samples loaded</div>
           </div>
         <div class="panel">
-          <div class="panel-header"><div class="dot" style="background:var(--accent3)"></div> Current Plate Assignments</div>
+          <button type="button" class="panel-header" data-panel="assign" onclick="togglePanel('assign')"
+                  aria-expanded="true"><span class="dot" style="background:var(--accent3)"></span> Current Plate Assignments <span class="chev">▾</span></button>
           <div class="assignment-list" id="assignmentList">
             <div class="empty-state">No assignments yet</div>
           </div>
@@ -2232,7 +2318,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '45fa811+local changes';
+const DESIGNER_BUILD = '4cdc86b+local changes';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -2329,6 +2415,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const badge = document.getElementById('versionBadge');
   if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
   placeUserField();
+  loadUiDensity();
+  applyPanelState();
+  watchLayout();
   // A menu that stays open after you have clicked past it reads as stuck.
   document.addEventListener('click', ev => {
     const split = document.getElementById('exportSplit');
@@ -2504,7 +2593,7 @@ function restoreSavedSession() {
   document.getElementById('mainUI').classList.remove('hidden');
   showChrome(true);
   uploadZone.style.display = 'none';
-  document.getElementById('fileName').textContent = originalFileName;
+  setFileNameLabel(originalFileName);
   const banner = document.getElementById('restoredBanner');
   banner.style.display = 'flex';
   banner.style.background = '#eef4ff';
@@ -2606,7 +2695,7 @@ function resetDesigner() {
   document.getElementById('restoredBanner').style.display = 'none';
   document.getElementById('dupWarning').style.display = 'none';
   document.getElementById('typeWarning').style.display = 'none';
-  document.getElementById('fileName').textContent = '—';
+  setFileNameLabel('—');
   ['sampleCount', 'plateCount', 'totalAssigned', 'totalWells']
     .forEach(id => { document.getElementById(id).textContent = '0'; });
   document.getElementById('sampleSearch').value = '';
@@ -2687,7 +2776,7 @@ function processFile(file) {
     document.getElementById('mainUI').classList.remove('hidden');
   showChrome(true);
     uploadZone.style.display = 'none';
-    document.getElementById('fileName').textContent = file.name;
+    setFileNameLabel(file.name);
     const banner = document.getElementById('restoredBanner');
     if (restored) {
       banner.style.display = 'flex';
@@ -3563,7 +3652,6 @@ function renderPlate() {
     const locked = colFullyReserved(currentPlate, c);
     const el = document.createElement('div');
     el.className = 'col-header';
-    el.style.position = 'relative';
     el.innerHTML = locked
       ? `${c}<span class="col-control-badge">CTRL</span>`
       : `${c}`;
@@ -3695,6 +3783,7 @@ function renderPlate() {
   renderLegend();
   updateInspector();
   updateCohortProgress();
+  scheduleFit();
 }
 
 function makeEl(tag, cls, text) {
@@ -6112,6 +6201,159 @@ function renderAutofillStats() {
 function groupLabelOf(field) {
   const f = GROUP_FIELDS.find(x => x.value === field);
   return (f && f.label) ? f.label.toLowerCase() : String(field || 'group');
+}
+
+// ─── Sizing the plate to the window ─────────────────────────────────────────
+// A 96-well plate is the thing you are looking at, so it should not be the
+// thing you scroll to see. The well size is measured from the space actually
+// left over after the chrome, rather than fixed at the 44px that happened to
+// suit one laptop.
+//
+// Both axes matter: the plate is twelve wells wide and eight tall, so whichever
+// runs out first sets the size. A floor keeps wells clickable (and above the
+// 24px minimum target size); a ceiling stops a big monitor from producing
+// comic wells.
+const WELL_MIN = 26, WELL_MAX = 62;              // compact, square
+const DWELL_MIN_W = 46, DWELL_MAX_W = 96;        // labelled, wider than tall
+const DWELL_MIN_H = 36, DWELL_MAX_H = 58;
+
+// ─── Text size ──────────────────────────────────────────────────────────────
+// One multiplier over the type scale, remembered per browser. It changes row
+// heights, so the plate is re-measured after it.
+const UI_DENSITIES = ['compact', 'normal', 'large', 'xlarge'];
+
+// ─── Collapsible rail panels ────────────────────────────────────────────────
+// Three open panels are taller than the screen, and which one matters depends
+// on what you are doing. What you closed stays closed next time.
+function togglePanel(key) {
+  const head = document.querySelector(`.panel-header[data-panel="${key}"]`);
+  const panel = head && head.closest('.panel');
+  if (!panel) return;
+  const collapsed = panel.classList.toggle('collapsed');
+  head.setAttribute('aria-expanded', String(!collapsed));
+  try {
+    const st = readPanelState();
+    st[key] = collapsed;
+    localStorage.setItem('phipseq_panels', JSON.stringify(st));
+  } catch (e) { /* private window — the panel still toggles, it just forgets */ }
+  scheduleFit();
+}
+
+function readPanelState() {
+  try { return JSON.parse(localStorage.getItem('phipseq_panels') || '{}') || {}; }
+  catch (e) { return {}; }
+}
+
+function applyPanelState() {
+  const st = readPanelState();
+  document.querySelectorAll('.panel-header[data-panel]').forEach(head => {
+    const panel = head.closest('.panel');
+    if (!panel) return;
+    const collapsed = !!st[head.dataset.panel];
+    panel.classList.toggle('collapsed', collapsed);
+    head.setAttribute('aria-expanded', String(!collapsed));
+  });
+}
+
+function setUiDensity(name, quiet) {
+  const d = UI_DENSITIES.includes(name) ? name : 'normal';
+  document.documentElement.setAttribute('data-density', d);
+  document.querySelectorAll('#sizeSeg button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.size === d)));
+  if (!quiet) {
+    try { localStorage.setItem('phipseq_ui_density', d); } catch (e) { /* private window */ }
+  }
+  scheduleFit();
+}
+
+function loadUiDensity() {
+  let d = 'normal';
+  try { d = localStorage.getItem('phipseq_ui_density') || 'normal'; } catch (e) { /* ignore */ }
+  setUiDensity(d, true);
+}
+
+function fitPlateToViewport() {
+  // Measuring needs a real layout engine. Under the test harness there is none,
+  // and the plate's size is not what those tests are about.
+  if (typeof window === 'undefined' || typeof getComputedStyle !== 'function') return;
+  const grid = document.getElementById('plateGrid');
+  const wrap = grid && grid.closest && grid.closest('.plate-wrapper');
+  if (!grid || !wrap || typeof wrap.clientWidth !== 'number') return;
+  if (wrap.offsetParent === null) return;
+
+  const detail = wellDensity === 'detail';
+  const gap = detail ? 5 : 8;
+  const hdr = 22;                                 // the 1..12 column header row
+  const rowhdr = detail ? 20 : 28;                // the A..H gutter
+
+  // Width the grid may occupy, inside the wrapper's padding.
+  const style = getComputedStyle(wrap);
+  const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+  const availW = Math.max(120, wrap.clientWidth - padX - rowhdr - gap * 12);
+
+  // Height left below the top of the grid, minus what sits under it: the
+  // progress bar, the stats line, the legend, and a little breathing room.
+  const top = grid.getBoundingClientRect().top;
+  const below = 104;
+  const availH = Math.max(120, window.innerHeight - top - below - hdr - gap * 8);
+
+  let w, h;
+  if (detail) {
+    w = clampNum(Math.floor(availW / 12), DWELL_MIN_W, DWELL_MAX_W);
+    h = clampNum(Math.floor(availH / 8), DWELL_MIN_H, DWELL_MAX_H);
+  } else {
+    const side = Math.floor(Math.min(availW / 12, availH / 8));
+    w = h = clampNum(side, WELL_MIN, WELL_MAX);
+  }
+
+  if (grid.dataset.fit === `${w}|${h}|${gap}`) return;   // nothing to change
+  grid.dataset.fit = `${w}|${h}|${gap}`;
+  grid.style.setProperty('--well', w + 'px');
+  grid.style.setProperty('--wellh', h + 'px');
+  grid.style.setProperty('--plate-gap', gap + 'px');
+  grid.style.setProperty('--hdr', hdr + 'px');
+  grid.style.setProperty('--rowhdr', rowhdr + 'px');
+
+  // Below about 31px a four-character stub stops being readable, and a stub you
+  // half-read is worse than none: the well still carries its colour and the
+  // hover card still carries the full identifier.
+  grid.classList.toggle('tiny', !detail && w < 31);
+}
+
+function clampNum(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+
+let fitTimer = null;
+function scheduleFit() {
+  if (typeof requestAnimationFrame !== 'function') return;
+  if (fitTimer) cancelAnimationFrame(fitTimer);
+  fitTimer = requestAnimationFrame(() => { fitTimer = null; fitPlateToViewport(); });
+}
+
+// Changing the text size reflows the chrome above the plate, and the fit reads
+// the plate's top — so scheduling one frame after the click measured the layout
+// that was on its way out. Rather than guess at how many frames that takes,
+// watch the things whose size moves the plate and re-fit when any of them
+// actually changes. This also covers the window, the collapsing panels and the
+// sample-list toggle without any of them having to remember to ask.
+function watchLayout() {
+  if (typeof ResizeObserver !== 'function') return;
+  const ro = new ResizeObserver(() => scheduleFit());
+  ['app-head-el', 'mainToolbar', 'toolbar2', 'viewEditor']
+    .map(id => id === 'app-head-el' ? document.querySelector('.app-head') : document.getElementById(id))
+    .forEach(el => { if (el) ro.observe(el); });
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('resize', scheduleFit);
+}
+
+// The chip truncates a long filename, so the full one lives in the tooltip.
+function setFileNameLabel(name) {
+  const el = document.getElementById('fileName');
+  if (!el) return;
+  el.textContent = name;
+  const chip = document.getElementById('fileChip');
+  if (chip) chip.title = name && name !== '—' ? name : '';
 }
 
 function updateStats() {
