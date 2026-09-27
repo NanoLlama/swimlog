@@ -1145,8 +1145,14 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     border-radius: 7px; padding: 4px 5px;
     display: flex; flex-direction: column;
     align-items: stretch; justify-content: space-between;
-    box-shadow: none; overflow: hidden;
+    box-shadow: none;
+    /* No overflow:hidden here. The hover punch-out is a child of the well, so
+       clipping the well to its 50px box clipped the card to a useless sliver —
+       which is the whole reason the card exists at this density. The label and
+       sub-label clip themselves instead. */
   }
+  .plate-grid.detail .well-label,
+  .plate-grid.detail .well-sub { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .plate-grid.detail .well:hover { transform: none; box-shadow: 0 2px 10px rgba(45,90,61,0.2); }
   .plate-grid.detail .well-label {
     max-width: 100%; font-size: 9.5px; font-weight: 500; text-align: left;
@@ -1531,9 +1537,12 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
      The plate is sized to fit, so it usually does not scroll — but at the
      largest text size, on a short window, or at Labelled density it can. A1 and
      H12 look identical once the numbers have scrolled away, so the headers stay.
-     The wrapper is the scroll context, which keeps the stickiness inside the
-     plate rather than letting it ride over the toolbar. */
-  .plate-wrapper { position: relative; overflow: auto; }
+     They stick against the page rather than an inner scrollport, because an
+     inner one clips the hover punch-out. */
+  /* Deliberately not a scrollport: overflow here clipped the hover punch-out on
+     edge wells. Sticky below therefore resolves against the page, which is what
+     actually scrolls now that the plate is sized to fit. */
+  .plate-wrapper { position: relative; }
   .plate-grid .col-header {
     position: sticky; top: 0; z-index: 3;
     background: var(--surface); border-radius: 3px;
@@ -2318,7 +2327,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '4cdc86b+local changes';
+const DESIGNER_BUILD = 'a1a4f97+local changes';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
