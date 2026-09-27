@@ -966,25 +966,436 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   }
 
   .hidden { display: none !important; }
+  /* ─── Chrome (mockup 1a) ───────────────────────────────────────────────────
+     The header carries identity on the left, the run's shape in the middle and
+     the two things you leave by on the right. Everything that was scattered
+     across three rows of buttons now sits in one toolbar. */
+  .app-head {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 22px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: 10px 10px 0 0;
+  }
+  .app-head h1 { font-size: 16px; letter-spacing: -0.01em; margin: 0; }
+  .app-head .sub {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+    font-size: 11px; color: var(--muted); margin: 1px 0 0;
+  }
+
+  /* One chip instead of a status bar: the four numbers that answer "what am I
+     looking at" without a second glance. */
+  .file-chip {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px; background: var(--surface2); border-radius: 6px;
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+    font-size: 11px; color: #3d3a33;
+    min-width: 0; overflow: hidden; white-space: nowrap;
+  }
+  .file-chip .nm {
+    overflow: hidden; text-overflow: ellipsis; max-width: 200px; display: inline-block;
+    vertical-align: bottom;
+  }
+  .file-chip .sep { color: #8d877a; }
+  .file-chip .nm { font-weight: 500; }
+
+  .view-tabs { display: flex; gap: 2px; background: var(--surface2); border-radius: 7px; padding: 3px; }
+  .view-tabs button {
+    border: 0; background: transparent; cursor: pointer;
+    font-family: inherit; font-size: 12px; color: #5e594f;
+    padding: 6px 13px; border-radius: 5px;
+  }
+  .view-tabs button[aria-selected="true"] {
+    background: var(--surface); color: var(--text); font-weight: 600;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+  }
+
+  /* Split button: the common export on the left, the rest behind the caret. */
+  .split-btn { display: flex; position: relative; }
+  .split-btn > .main {
+    border-radius: 6px 0 0 6px; border-right: 1px solid rgba(255,255,255,0.25);
+  }
+  .split-btn > .caret { border-radius: 0 6px 6px 0; padding-left: 10px; padding-right: 10px; }
+  .export-menu {
+    position: absolute; top: calc(100% + 5px); right: 0; z-index: 400;
+    min-width: 248px; padding: 5px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+  }
+  .export-menu button {
+    display: block; width: 100%; text-align: left; border: 0; background: transparent;
+    cursor: pointer; font-family: inherit; font-size: 12px; color: var(--text);
+    padding: 8px 10px; border-radius: 5px; line-height: 1.35;
+  }
+  .export-menu button:hover { background: var(--accent-light); }
+  .export-menu button small { display: block; color: var(--muted); font-size: 10px; margin-top: 1px; }
+  .export-menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
+
+  .toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 22px; border-bottom: 1px solid var(--border);
+    background: var(--surface); font-size: 12px;
+  }
+  .toolbar .vr { width: 1px; height: 22px; background: var(--border); margin: 0 2px; }
+  .seg { display: flex; background: var(--surface2); border-radius: 6px; padding: 2px; gap: 2px; }
+  .seg button {
+    border: 0; background: transparent; cursor: pointer; font-family: inherit;
+    font-size: 12px; color: #3d3a33; padding: 4px 10px; border-radius: 4px;
+  }
+  .seg button:hover { background: var(--surface); }
+  .seg button[aria-pressed="true"] { background: var(--surface); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,0.07); }
+
+  .stepper { display: flex; align-items: center; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+  .stepper button {
+    border: 0; background: transparent; cursor: pointer; color: var(--muted);
+    font-family: inherit; font-size: 12px; padding: 6px 10px;
+  }
+  .stepper button:hover:not(:disabled) { color: var(--accent); }
+  .stepper button:disabled { opacity: 0.35; cursor: default; }
+  .stepper .lbl {
+    padding: 6px 12px; font-weight: 600;
+    border-left: 1px solid var(--surface2); border-right: 1px solid var(--surface2);
+    white-space: nowrap;
+  }
+  .stepper .lbl span { font-weight: 400; color: var(--muted); }
+
+  /* Validate carries its own count, so the run's health is legible without
+     opening the report. */
+  .btn-validate {
+    display: flex; align-items: center; gap: 7px;
+    border: 1px solid var(--border); background: var(--surface); color: #3d3a33;
+  }
+  .btn-validate.has-warn { border-color: #e0c46a; background: #fef9ec; color: #7a5c00; font-weight: 600; }
+  .btn-validate.has-err  { border-color: #e0a0a0; background: #fbe9e9; color: #8f2f2f; font-weight: 600; }
+  .btn-validate.is-clean { border-color: #9fc2aa; background: var(--accent-light); color: #1f4a2e; font-weight: 600; }
+  .vbadge {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 500;
+    padding: 1px 6px; border-radius: 9px;
+  }
+  .btn-validate.has-warn .vbadge { background: #e8c840; color: #3d2e00; }
+  .btn-validate.has-err  .vbadge { background: #c96b6b; color: #fff; }
+
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden;
+  }
+  .card-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 11px 12px; border-bottom: 1px solid var(--border);
+  }
+  .card-head .t { font-weight: 600; font-size: 13px; }
+  .card-head .n { font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 11px; color: var(--muted); }
+
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  .plate-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 14px;
+  }
+  .plate-head .pt { font-weight: 700; font-size: 15px; }
+  .plate-head .pd { font-size: 12px; color: var(--muted); }
+  .plate-head .pn {
+    margin-left: auto; font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+    font-size: 11px; color: var(--muted);
+  }
+  /* ─── Plate tabs and well density (mockup 1b) ──────────────────────────────
+     Ten plates as ten chips, each carrying its own fill bar, so "which plate
+     still has room" is answered without stepping through them. */
+  .plate-tabs {
+    display: flex; gap: 4px; align-items: center; flex-wrap: wrap;
+    padding: 9px 22px; border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .plate-tab {
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 6px 9px 5px; border-radius: 6px; min-width: 40px;
+    border: 0; background: transparent; cursor: pointer; font-family: inherit;
+    color: #3d3a33;
+  }
+  .plate-tab:hover { background: var(--surface2); }
+  .plate-tab[aria-current="true"] { background: var(--text); color: var(--surface); }
+  .plate-tab .n {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 11px;
+    font-weight: 500; text-align: center;
+  }
+  .plate-tab .track { height: 3px; border-radius: 2px; background: var(--border); overflow: hidden; }
+  .plate-tab[aria-current="true"] .track { background: rgba(255,255,255,0.22); }
+  .plate-tab .fill { height: 100%; background: var(--accent); }
+  .plate-tab[aria-current="true"] .fill { background: #9fd4ae; }
+  .plate-tab .fill.partial { background: #c79a00; }
+
+  /* Labelled wells: the plate stops being a colour field and starts being
+     readable at arm's length, which is how it is read at the bench. */
+  .plate-grid.detail { grid-template-columns: 22px repeat(12, minmax(50px, 1fr)); gap: 5px; }
+  .plate-grid.detail .well {
+    aspect-ratio: auto; height: 48px; min-width: 0; border-radius: 7px;
+    padding: 4px 5px; display: flex; flex-direction: column;
+    align-items: stretch; justify-content: space-between;
+    box-shadow: none; overflow: hidden;
+  }
+  .plate-grid.detail .well:hover { transform: none; box-shadow: 0 2px 10px rgba(45,90,61,0.2); }
+  .plate-grid.detail .well-label {
+    max-width: 100%; font-size: 9.5px; font-weight: 500; text-align: left;
+    letter-spacing: -0.02em;
+  }
+  .plate-grid.detail .well-sub {
+    font-size: 8.5px; opacity: 0.85; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; font-family: 'DM Sans', sans-serif;
+  }
+  .plate-grid:not(.detail) .well-sub { display: none; }
+
+  .legend .legend-dot.sq { border-radius: 3px; width: 13px; height: 11px; }
+
+  /* ─── Selection inspector (mockup 1b) ──────────────────────────────────────
+     The selection stops being a banner you read and becomes the thing you act
+     in: what is selected, what to put there, and how to commit it. */
+  .inspector { display: flex; flex-direction: column; gap: 11px; padding: 13px 13px 15px; }
+  .inspector .eyebrow {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 10.5px;
+    font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+  }
+  .inspector .count { display: flex; align-items: baseline; gap: 8px; }
+  .inspector .count b { font-size: 19px; }
+  .inspector .count span { font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 12px; color: #3d3a33; }
+  .match-list {
+    display: flex; flex-direction: column; border: 1px solid var(--border);
+    border-radius: 7px; overflow: hidden auto; background: var(--surface); max-height: 188px;
+  }
+  .match-row {
+    display: grid; grid-template-columns: 8px 1fr auto; gap: 9px; align-items: center;
+    padding: 7px 10px; border-bottom: 1px solid var(--surface2);
+    cursor: pointer; text-align: left; border-left: 0; border-right: 0; border-top: 0;
+    background: var(--surface); font-family: inherit; width: 100%;
+  }
+  .match-row:last-child { border-bottom: 0; }
+  .match-row:hover, .match-row.on { background: var(--accent-light); }
+  .match-row .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .match-row .id { font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 11.5px; font-weight: 500; }
+  .match-row .meta { font-size: 10.5px; color: var(--muted); }
+  .match-row .hint { font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 10px; color: var(--muted); }
+  .kbd {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 10px;
+    background: var(--surface2); padding: 1px 5px; border-radius: 3px;
+  }
+
+  /* Nothing in the header may reflow: it is the one row that must stay put
+     while the run underneath it changes. */
+  .app-head button, .app-head .view-tabs button, .app-head input { white-space: nowrap; }
+  .app-head .split-btn .btn { white-space: nowrap; }
+  .toolbar .btn { white-space: nowrap; }
+  /* ─── Run overview (mockup 1c) ─────────────────────────────────────────────
+     The editor answers "what is on this plate". This answers "is the run
+     balanced", which no amount of stepping through plates ever does. */
+  .ov-head {
+    display: flex; align-items: flex-start; gap: 20px; flex-wrap: wrap;
+    padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  .ov-kpis { margin-left: auto; display: flex; gap: 26px; align-items: flex-end; flex-wrap: wrap; }
+  .ov-kpi { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
+  .ov-kpi .v {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+    font-size: 20px; letter-spacing: -0.02em;
+  }
+  .ov-kpi .l { font-size: 11px; color: var(--muted); }
+
+  .ov-body { display: grid; grid-template-columns: minmax(0, 1fr) 460px; align-items: start; }
+  .ov-left { padding: 20px 24px; display: flex; flex-direction: column; gap: 22px; border-right: 1px solid var(--border); }
+  .ov-right { padding: 20px 24px; display: flex; flex-direction: column; gap: 14px; background: var(--bg); }
+
+  .ov-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
+  .ov-card {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 9px;
+    border-radius: 8px; background: var(--surface); border: 1.5px solid var(--border);
+    cursor: pointer; text-align: left; font-family: inherit; color: inherit;
+  }
+  .ov-card:hover { border-color: #9fc2aa; }
+  .ov-card[aria-current="true"] { border-color: var(--accent); background: var(--surface); }
+  .ov-card .top { display: flex; justify-content: space-between; align-items: baseline; }
+  .ov-card .nm { font-weight: 600; font-size: 12.5px; }
+  .ov-card .ct { font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 10px; color: var(--muted); }
+  .ov-card .dots { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 2px; }
+  .ov-card .dots i { aspect-ratio: 1; border-radius: 50%; display: block; }
+  .ov-card .st { font-size: 10.5px; }
+
+  .ov-bars { display: grid; grid-template-columns: 58px minmax(0, 1fr) 54px; gap: 6px 10px; align-items: center; }
+  .ov-bar {
+    position: relative; display: flex; height: 14px; gap: 1px;
+    background: var(--surface2); border-radius: 3px; overflow: hidden;
+  }
+  .ov-bar i { display: block; height: 100%; }
+  .ov-bar .ref { position: absolute; top: 0; bottom: 0; border-left: 1.5px dashed rgba(30,30,30,0.55); }
+  .ov-legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 11px; color: #3d3a33; padding-left: 68px; margin-top: 10px; }
+  .ov-legend span i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; margin-right: 6px; }
+
+  .ov-mini { display: grid; grid-template-columns: 16px repeat(12, minmax(0, 1fr)); gap: 4px; }
+  .ov-mini .h {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 9.5px;
+    color: var(--muted); text-align: center; display: flex; align-items: center; justify-content: center;
+  }
+  .ov-mini i { aspect-ratio: 1; box-sizing: border-box; border-radius: 50%; border: 1.5px solid; display: block; }
+  .ov-facts { display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+  .ov-facts div {
+    display: flex; justify-content: space-between; gap: 12px;
+    padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .ov-facts span:first-child { color: #5e594f; }
+  .ov-facts span:last-child { font-family: 'DM Mono', ui-monospace, Menlo, monospace; text-align: right; }
+
+  @media (max-width: 1180px) { .ov-body { grid-template-columns: minmax(0, 1fr); } }
+
+  /* ─── Autofill dialog (mockup 1d) ──────────────────────────────────────────
+     Settings left, the plate they produce right. The point is that you see the
+     layout before you commit it, not after. */
+  .autofill-modal.af-wide { max-width: 1180px; width: 96vw; padding: 0; }
+  .af-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 16px 22px; border-bottom: 1px solid var(--border);
+  }
+  .af-head .af-sub { font-size: 12px; color: var(--muted); }
+  .af-x {
+    margin-left: auto; border: 0; background: transparent; cursor: pointer;
+    font-size: 20px; line-height: 1; color: var(--muted); padding: 2px 6px; border-radius: 5px;
+  }
+  .af-x:hover { background: var(--surface2); color: var(--text); }
+
+  .af-body { display: grid; grid-template-columns: 460px minmax(0, 1fr); align-items: start; }
+  .af-settings {
+    padding: 16px 20px; display: flex; flex-direction: column; gap: 16px;
+    border-right: 1px solid var(--border); max-height: 66vh; overflow-y: auto;
+  }
+  .af-preview {
+    padding: 16px 20px; background: var(--bg); display: flex; flex-direction: column; gap: 12px;
+    max-height: 66vh; overflow-y: auto;
+  }
+  .af-sec { display: flex; flex-direction: column; gap: 8px; }
+  .af-eyebrow {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 10.5px;
+    font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted);
+  }
+  .af-sec .dither-controls { margin: 0; }
+  /* .hint was only ever styled inside .dither-field; the regrouped sections use
+     it outside one, where it was inheriting body size. */
+  .af-sec .hint, .af-sec label { font-size: 10px; color: var(--muted); line-height: 1.45; }
+  .af-sec .toggle-wrap { font-size: 11px; font-weight: 400; margin-bottom: 4px; }
+  .af-sec .dither-field .hint { font-size: 10px; }
+
+  .rep-opts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .rep-opt {
+    display: flex; flex-direction: column; gap: 8px; padding: 9px;
+    border-radius: 7px; background: var(--surface); border: 1.5px solid var(--border);
+    cursor: pointer; font-family: inherit; text-align: left; color: inherit;
+  }
+  .rep-opt:hover { border-color: #9fc2aa; }
+  .rep-opt[aria-checked="true"] { border-color: var(--accent); }
+  .rep-opt .cells { display: grid; grid-template-columns: repeat(4, 9px); gap: 3px; }
+  .rep-opt .cells i { width: 9px; height: 9px; border-radius: 50%; display: block; }
+  .rep-opt .nm { font-size: 10.5px; line-height: 1.3; }
+
+  .rep-count { display: flex; gap: 8px; }
+  .rep-count button {
+    padding: 6px 11px; border-radius: 6px; font-size: 12px; cursor: pointer;
+    font-family: inherit; border: 1px solid var(--border); background: var(--surface); color: var(--text);
+  }
+  .rep-count button[aria-checked="true"] { background: var(--text); color: var(--surface); border-color: var(--text); }
+
+  .af-pv-head { display: flex; align-items: center; gap: 10px; }
+  .af-pv-nav { margin-left: auto; display: flex; align-items: center; gap: 2px; font-size: 12px; }
+  .af-pv-nav button {
+    border: 0; background: transparent; cursor: pointer; color: var(--muted); padding: 4px 8px; font-size: 12px;
+  }
+  .af-pv-nav button:hover:not(:disabled) { color: var(--accent); }
+  .af-pv-nav button:disabled { opacity: 0.3; cursor: default; }
+  .af-pv-nav span { font-weight: 600; min-width: 96px; text-align: center; }
+
+  .af-grid {
+    display: grid; grid-template-columns: 14px repeat(12, minmax(0, 1fr)); gap: 4px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 12px;
+  }
+  .af-grid .h {
+    font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 9.5px; color: var(--muted);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .af-grid i { aspect-ratio: 1; box-sizing: border-box; border-radius: 50%; border: 1.5px solid; display: block; }
+
+  .af-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .af-stat {
+    padding: 9px 11px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 7px; display: flex; flex-direction: column; gap: 2px;
+  }
+  .af-stat .v { font-family: 'DM Mono', ui-monospace, Menlo, monospace; font-size: 16px; }
+  .af-stat .l { font-size: 10.5px; color: #5e594f; line-height: 1.25; }
+
+  .af-warn {
+    padding: 9px 11px; background: #fef9ec; border: 1px solid #e8c840;
+    border-radius: 7px; font-size: 12px; line-height: 1.45; color: #5c4500;
+  }
+  .af-foot { display: flex; align-items: center; gap: 8px; padding: 13px 22px; border-top: 1px solid var(--border); margin: 0; }
+  .af-foot-note { font-size: 11.5px; color: var(--muted); margin-right: auto; }
+
+  @media (max-width: 1080px) {
+    .af-body { grid-template-columns: minmax(0, 1fr); }
+    .af-settings { border-right: 0; border-bottom: 1px solid var(--border); max-height: none; }
+    .af-preview { max-height: none; }
+  }
+
 </style>
 </head>
 <body>
 
 <div class="app">
-  <header>
-    <div>
+  <header class="app-head">
+    <div style="display:flex;flex-direction:column;gap:1px;">
       <h1>PhIPSeq Plate Designer</h1>
-      <p>96-Well Sample Manifest Tool</p>
+      <p class="sub">96-well sample manifest tool · <span id="versionBadge">v4.3</span></p>
     </div>
-    <div style="display:flex;align-items:center;gap:10px;">
+
+    <!-- The four numbers that answer "what am I looking at". Ids are unchanged
+         so updateStats() and the test harness keep driving them. -->
+    <div class="file-chip hidden" id="fileChip">
+      <span class="nm" id="fileName">—</span>
+      <span class="sep">·</span><span><span id="sampleCount">0</span> samples</span>
+      <span class="sep">·</span><span><span id="plateCount">0</span> plates</span>
+      <span class="sep">·</span><span><span id="totalAssigned">0</span> / <span id="totalWells">0</span> wells</span>
+    </div>
+
+    <div class="view-tabs hidden" id="viewTabs" role="tablist" aria-label="View">
+      <button type="button" role="tab" id="tabEditor" aria-selected="true"
+              aria-controls="viewEditor" onclick="switchView('editor')">Editor</button>
+      <button type="button" role="tab" id="tabOverview" aria-selected="false"
+              aria-controls="viewOverview" onclick="switchView('overview')">Run overview</button>
+    </div>
+
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
       <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
-        <label for="templateUser" style="color:var(--muted);">Template user:</label>
-        <input id="templateUser" type="text" placeholder="name or initials"
+        <label for="templateUser" class="sr-only">Template user</label>
+        <input id="templateUser" type="text" placeholder="Template user"
                oninput="rememberUser()" title="Recorded against every edit and written to the Design Log"
                style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);
-                      font-family:'DM Mono',monospace;font-size:11px;padding:4px 9px;width:160px;outline:none;">
+                      font-family:'DM Mono',monospace;font-size:11px;padding:5px 10px;width:104px;outline:none;">
       </div>
-      <div class="badge" id="versionBadge">v4.0</div>
+      <button class="btn btn-ghost hidden" id="newManifestBtn" onclick="resetDesigner()"
+              style="padding:7px 12px;font-size:12px;"
+              title="Clear this design and load a different manifest">↺ New manifest</button>
+      <div class="split-btn hidden" id="exportSplit">
+        <button class="btn btn-primary main" onclick="downloadExcel()"
+                title="The manifest workbook with every plate map filled in">Export Excel</button>
+        <button class="btn btn-primary caret" id="exportCaret" aria-haspopup="true" aria-expanded="false"
+                onclick="toggleExportMenu(event)" title="Other export formats" aria-label="Other export formats">▾</button>
+        <div class="export-menu hidden" id="exportMenu" role="menu">
+          <button type="button" role="menuitem" onclick="runExport('excel')">Excel manifest
+            <small>Lab and Analysis plate maps, design log, diagnostics</small></button>
+          <hr>
+          <button type="button" role="menuitem" onclick="runExport('wellmap')">Well map CSV
+            <small>One row per well, empties included — for analysis code</small></button>
+          <button type="button" role="menuitem" onclick="runExport('worklist')">Worklist CSV
+            <small>Cherry-pick transfers — needs source_rack and source_position</small></button>
+          <button type="button" role="menuitem" onclick="runExport('gwl')">Tecan .gwl
+            <small>Same transfers in the Fluent's own format — dry-run it first</small></button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -1008,16 +1419,70 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
 
   <!-- Main UI (hidden until file loaded) -->
   <div id="mainUI" class="hidden">
-    <div class="status-bar" style="margin-bottom:16px;">
-      <div>File: <span id="fileName">—</span></div>
-      <div>Samples: <span id="sampleCount">0</span></div>
-      <div>Plates: <span id="plateCount">0</span></div>
-      <div>Total Assigned: <span id="totalAssigned">0</span> / <span id="totalWells">0</span></div>
-      <button class="btn btn-ghost" onclick="resetDesigner()" style="margin-left:auto;padding:4px 12px;font-size:11px;"
-              title="Clear this design and load a different manifest">↺ New manifest</button>
+    <!-- One toolbar for the whole app (mockup 1a): what plate, what is
+         selected, the three dialogs, and the three things you do to a plate.
+         It sits above the columns because none of it belongs to just one. -->
+    <div class="toolbar hidden" id="mainToolbar">
+      <div class="stepper">
+        <button type="button" onclick="changePlate(-1)" id="platePrev" aria-label="Previous plate">◀</button>
+        <div class="lbl" id="plateLabel">Plate 1 <span>of 1</span></div>
+        <button type="button" onclick="changePlate(1)" id="plateNext" aria-label="Next plate">▶</button>
+      </div>
+      <button class="btn btn-ghost" onclick="addPlates(1)" style="padding:6px 10px;"
+              title="Add a plate to the run" aria-label="Add a plate">＋</button>
+      <button class="btn btn-ghost" onclick="removeCurrentPlate()" id="removePlateBtn" style="padding:6px 10px;"
+              title="Remove this plate — only possible while it is empty" aria-label="Remove this plate">－</button>
 
+      <div class="vr"></div>
+      <span style="color:var(--muted);">Select</span>
+      <div class="seg">
+        <button type="button" onclick="selectAll()">All</button>
+        <button type="button" onclick="clearSelection()">None</button>
+        <button type="button" onclick="selectEmpty()">Empty</button>
+      </div>
+
+      <div class="vr"></div>
+      <button class="btn btn-ghost" style="font-size:12px;" onclick="openControlModal()">🧪 Control template</button>
+      <button class="btn btn-ghost" style="font-size:12px;" onclick="openIndexModal()">🧬 Index assignment</button>
+      <button class="btn btn-ghost" style="font-size:12px;border-color:var(--accent);background:var(--accent-light);color:var(--accent);font-weight:600;"
+              onclick="openAutofillModal()">⚡ Autofill plates</button>
+
+      <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+        <button class="btn btn-ghost" id="undoBtn" onclick="undo()" disabled title="Nothing to undo">↶ Undo</button>
+        <button class="btn btn-ghost" onclick="clearPlate()">Clear plate</button>
+        <button class="btn btn-validate" id="validateBtn" onclick="openValidation()"
+                title="Check the whole design against the rules the bench relies on">
+          <span>Validate</span><span class="vbadge hidden" id="validateBadge"></span>
+        </button>
+      </div>
     </div>
 
+    <div class="plate-tabs hidden" id="plateTabs" role="tablist" aria-label="Plates"></div>
+
+    <!-- The control area has no 1a equivalent — 1a only states it in the plate
+         header — but it still has to be settable, so it folds away instead. -->
+    <details class="hidden" id="areaRow" style="border-bottom:1px solid var(--border);background:var(--surface);">
+      <summary style="cursor:pointer;padding:8px 22px;font-size:11.5px;color:#3d3a33;list-style:none;">
+        Control area — <span id="controlAreaLabel" class="area-label"></span>
+        <span style="color:var(--muted);">· click to change</span>
+      </summary>
+      <div class="v3-toolbar" style="border:0;border-top:1px solid var(--border);border-radius:0;margin:0;">
+        <label class="toggle-wrap" title="Default control area for every plate that has no area of its own">
+          <input type="checkbox" id="lockControlCols" onchange="renderPlate()" checked>
+          Reserve cols 11–12 for controls (default)
+        </label>
+        <div class="divider"></div>
+        <div class="quick-select" style="margin-left:2px;">
+          <button onclick="setReservedPreset('cols1112')" title="Reserve columns 11 and 12 on this plate">Cols 11–12</button>
+          <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
+          <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
+          <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
+          <button id="unlockBtn" onclick="toggleAreaUnlock()">🔓 Unlock</button>
+        </div>
+      </div>
+    </details>
+
+    <div id="viewEditor" role="tabpanel" aria-labelledby="tabEditor">
     <div class="main-layout">
       <!-- Left: Samples -->
       <div>
@@ -1078,60 +1543,6 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <!-- Center: Plate -->
       <div class="plate-area">
 
-        <!-- V3 Toolbar -->
-        <div class="v3-toolbar">
-          <label class="toggle-wrap" title="Default control area for every plate that has no area of its own">
-            <input type="checkbox" id="lockControlCols" onchange="renderPlate()" checked>
-            Reserve cols 11–12 for controls (default)
-          </label>
-          <div class="divider"></div>
-          <span class="area-label">Control area —</span>
-          <span id="controlAreaLabel" class="area-label"></span>
-          <div class="quick-select" style="margin-left:2px;">
-            <button onclick="setReservedPreset('cols1112')" title="Reserve columns 11 and 12 on this plate">Cols 11–12</button>
-            <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
-            <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
-            <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
-            <button id="unlockBtn" onclick="toggleAreaUnlock()">🔓 Unlock</button>
-          </div>
-          <div class="divider"></div>
-          <button class="btn btn-ghost" style="font-size:12px;" onclick="openControlModal()">🧪 Control Template</button>
-          <button class="btn btn-ghost" style="font-size:12px;" onclick="openIndexModal()">🧬 Index Assignment</button>
-          <button class="btn btn-ghost" style="font-size:12px;" onclick="openAutofillModal()">⚡ Autofill Plates</button>
-        </div>
-
-        <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
-          <div class="plate-nav">
-            <button onclick="changePlate(-1)">◀</button>
-            <span id="plateLabel">Plate 1</span>
-            <button onclick="changePlate(1)">▶</button>
-            <button onclick="addPlates(1)" title="Add a plate to the run">＋</button>
-            <button onclick="removeCurrentPlate()" id="removePlateBtn"
-                    title="Remove this plate — only possible while it is empty">－</button>
-          </div>
-          <div id="plateNeed" style="font-size:11px;color:var(--muted);"></div>
-          <div class="quick-select">
-            <span>Select:</span>
-            <button onclick="selectAll()">All</button>
-            <button onclick="clearSelection()">None</button>
-            <button onclick="selectEmpty()">Empty</button>
-          </div>
-          <div style="display:flex; gap:8px;">
-            <button class="btn btn-ghost" id="undoBtn" onclick="undo()" disabled
-                    title="Nothing to undo">↶ Undo</button>
-            <button class="btn btn-ghost" onclick="openValidation()"
-                    title="Check the whole design against the rules the bench relies on">✓ Validate layout</button>
-            <button class="btn btn-ghost" onclick="clearPlate()">Clear Plate</button>
-            <button class="btn btn-ghost" onclick="downloadWellMapCsv()"
-                    title="One row per well, empties included — for analysis code">⬇ Well map CSV</button>
-            <button class="btn btn-ghost" onclick="downloadWorklistCsv()"
-                    title="Cherry-pick transfers, one row per well — needs source_rack and source_position in the manifest">⬇ Worklist CSV</button>
-            <button class="btn btn-ghost" onclick="downloadTecanGwl()"
-                    title="Tecan .gwl for the Fluent — same transfers in the instrument's own format">⬇ Tecan .gwl</button>
-            <button class="btn btn-primary" onclick="downloadExcel()">⬇ Export Excel</button>
-          </div>
-        </div>
-
         <!-- Selection mode banner -->
         <div class="selection-mode hidden" id="selectionBanner">
           <div id="selectionText">0 wells selected</div>
@@ -1141,33 +1552,74 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         </div>
 
         <div class="plate-wrapper">
+          <div class="plate-head">
+            <div class="pt">Plate <span id="plateHeadNum">1</span></div>
+            <div class="pd" id="plateHeadDesc"></div>
+            <div class="pn" id="plateNeed"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:-4px 0 14px;">
+            <span style="font-size:11px;color:var(--muted);">Colour by</span>
+            <div class="seg" id="colourBySeg" role="group" aria-label="Colour wells by">
+              <button type="button" data-cb="cohort" aria-pressed="true"  onclick="setColourBy('cohort')">Cohort</button>
+              <button type="button" data-cb="type"   aria-pressed="false" onclick="setColourBy('type')">Sample type</button>
+              <button type="button" data-cb="index"  aria-pressed="false" onclick="setColourBy('index')">Index</button>
+              <button type="button" data-cb="volume" aria-pressed="false" onclick="setColourBy('volume')">Volume</button>
+            </div>
+            <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+              <span style="font-size:11px;color:var(--muted);">Wells</span>
+              <div class="seg" id="densitySeg" role="group" aria-label="Well size">
+                <button type="button" data-den="compact" aria-pressed="true"  onclick="setWellDensity('compact')">Compact</button>
+                <button type="button" data-den="detail"  aria-pressed="false" onclick="setWellDensity('detail')">Labelled</button>
+              </div>
+            </div>
+          </div>
           <div class="plate-grid" id="plateGrid"></div>
           <div class="plate-progress">
             <div class="plate-progress-fill" id="progressFill" style="width:0%"></div>
           </div>
           <div style="margin-top:8px; font-size:11px; color:var(--muted); text-align:center; font-family:'DM Mono',monospace;" id="plateStats"></div>
 
-          <!-- Assign bar — lives right under the plate -->
-          <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border); display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-            <span style="font-size:11px; color:var(--muted); white-space:nowrap; letter-spacing:0.04em; text-transform:uppercase; font-family:'DM Mono',monospace;">Assign to:</span>
-            <select id="assignSelect" title="Select sample to assign" style="flex:1; min-width:160px; background:var(--bg); border:1px solid var(--border); border-radius:5px; color:var(--text); font-family:'DM Sans',sans-serif; font-size:12px; padding:7px 10px; outline:none; cursor:pointer;">
-              <option value="">— pick sample —</option>
-            </select>
-            <button class="btn btn-primary" onclick="assignSelected()" style="white-space:nowrap;">⬤ Assign Wells</button>
-            <button class="btn btn-ghost" onclick="assignSelectedAllPlates()" style="white-space:nowrap;"
-                    title="Put this sample in the same wells on every plate — the usual way to run one control across the whole batch">All plates</button>
-          </div>
-        </div>
-
-        <div class="legend">
-          <div class="legend-item"><div class="legend-dot" style="border-color:var(--border); background:var(--empty)"></div>Empty</div>
-          <div class="legend-item"><div class="legend-dot" style="border-color:var(--accent); background:rgba(79,255,176,0.25)"></div>Selected</div>
-          <div class="legend-item"><div class="legend-dot" style="border-color:var(--assigned); background:rgba(79,184,255,0.15)"></div>Assigned</div>
+        <div class="legend" id="plateLegend"></div>
         </div>
       </div>
 
       <!-- Right: Assignments -->
       <div>
+        <!-- Selection inspector (mockup 1b): the selection, what goes in it,
+             and the two ways to commit — all in one place. -->
+        <div class="card" style="margin-bottom:14px;">
+          <div class="inspector">
+            <div class="eyebrow"><span>Selection</span><span style="text-transform:none;font-weight:400;">Esc to clear</span></div>
+            <div class="count">
+              <b id="inspCount">0 wells</b>
+              <span id="inspRange"></span>
+            </div>
+            <label class="sr-only" for="inspSearch">Find a sample to assign</label>
+            <input type="text" id="inspSearch" placeholder="Type to find a sample…"
+                   oninput="renderInspectorMatches()" onkeydown="inspectorKey(event)"
+                   style="padding:8px 10px;border:1px solid var(--border);border-radius:7px;
+                          background:var(--surface);font-family:inherit;font-size:12.5px;
+                          color:var(--text);outline:none;width:100%;box-sizing:border-box;">
+            <div class="match-list" id="inspMatches"></div>
+            <label class="sr-only" for="assignSelect">Sample to assign</label>
+            <select id="assignSelect" title="Select sample to assign" onchange="onAssignSelectChanged()"
+                    style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);
+                           border-radius:5px;color:var(--text);font-family:'DM Sans',sans-serif;
+                           font-size:12px;padding:7px 10px;outline:none;cursor:pointer;">
+              <option value="">— pick sample —</option>
+            </select>
+            <div style="display:flex;gap:7px;">
+              <button class="btn btn-primary" style="flex:1;" onclick="assignSelected()">⬤ Assign wells</button>
+              <button class="btn btn-ghost" onclick="assignSelectedAllPlates()"
+                      title="Put this sample in the same wells on every plate — the usual way to run one control across the whole batch">All plates</button>
+            </div>
+            <div style="font-size:11px;color:var(--muted);display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+              <span class="kbd">↵</span>this plate
+              <span class="kbd" style="margin-left:6px;">⇧↵</span>same wells on all plates
+            </div>
+          </div>
+        </div>
+
         <div class="panel">
           <div class="panel-header"><div class="dot" style="background:var(--accent3)"></div> Current Plate Assignments</div>
           <div class="assignment-list" id="assignmentList">
@@ -1184,137 +1636,215 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       </div>
     </div>
 
-    <div class="download-section">
-      <div>
-        <strong>Export Manifest</strong>
-        <p>Downloads the original Excel with Lab and Analysis Plate Maps filled in</p>
+    </div><!-- /#viewEditor -->
+
+    <!-- Run overview (mockup 1c). Every plate at once: the view that answers
+         "is this run balanced" without opening ten plates one at a time. -->
+    <div id="viewOverview" class="hidden" role="tabpanel" aria-labelledby="tabOverview">
+      <div class="ov-head">
+        <div>
+          <div style="font-weight:700;font-size:16px;">Run overview</div>
+          <div class="sub" id="ovSubtitle" style="font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);"></div>
+        </div>
+        <div class="ov-kpis" id="ovKpis"></div>
       </div>
-      <button class="btn btn-primary" onclick="downloadExcel()">⬇ Download Updated Manifest</button>
+      <div class="ov-body">
+        <div class="ov-left">
+          <div class="ov-cards" id="ovCards"></div>
+          <div>
+            <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
+              <div style="font-weight:600;font-size:13px;">Cohort share per plate</div>
+              <div style="font-size:11.5px;color:var(--muted);">Dashed line = run-wide share. A plate that
+                drifts from it confounds cohort with plate.</div>
+            </div>
+            <div class="ov-bars" id="ovBars"></div>
+            <div class="ov-legend" id="ovLegend"></div>
+          </div>
+        </div>
+        <div class="ov-right">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <div style="font-weight:700;font-size:16px;" id="ovSelName">Plate 1</div>
+            <div style="font-size:12px;color:var(--muted);">selected</div>
+            <button class="btn btn-primary" id="ovOpenBtn" style="margin-left:auto;padding:7px 12px;font-size:12px;"
+                    onclick="openSelectedInEditor()">Open in editor</button>
+          </div>
+          <div class="ov-mini" id="ovMini"></div>
+          <div class="ov-facts" id="ovFacts"></div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- Autofill Modal -->
+<!-- Autofill Modal (mockup 1d) — settings on the left, a live preview of what
+     Apply would do on the right. Every control keeps the id it had, so the
+     planner and its tests are untouched by the rearrangement. -->
 <div class="autofill-modal-overlay hidden" id="autofillOverlay">
-  <div class="autofill-modal">
-    <h2>⚡ Autofill Plates</h2>
-    <p>Only <strong>serum, CSF, and plasma</strong> samples are autofilled — mAbs, controls and other types stay manual. Each sample is laid down as a <strong>side-by-side duplicate</strong> in columns 1–10; columns 11–12 are left for controls. In <strong>dither</strong> mode every block of N consecutive plates receives a proportional share of each group, so group membership is not confounded with plate. <strong>Sample order</strong> and <strong>well placement</strong> are separate choices: keep each plate's share of a group a consecutive run of tubes laid out in contiguous column blocks for hand pipetting, or randomise both once a robot is doing the work. Layouts are fully reproducible from the seed.</p>
-    <div class="dither-controls">
-      <div class="dither-field">
-        <label for="layoutMode">Layout mode</label>
-        <select id="layoutMode" onchange="onLayoutModeChange(); autofillOptionChanged();">
-          <option value="dither">Dither groups across plates</option>
-          <option value="block">Block fill (v3 behaviour)</option>
-        </select>
-        <span class="hint" id="layoutModeHint"></span>
-      </div>
-      <div class="dither-field">
-        <label for="groupByField">Group / stratify by</label>
-        <select id="groupByField" onchange="autofillOptionChanged()"></select>
-        <span class="hint">The variable balanced across plates.</span>
-      </div>
-      <div class="dither-field" id="ditherWindowField">
-        <label for="ditherWindow">Dither across N plates</label>
-        <input type="number" id="ditherWindow" min="1" step="1" value="4"
-               oninput="this.dataset.touched=1; autofillOptionChanged();">
-        <span class="hint">Window size. N = all plates spreads each group over the whole run.</span>
-      </div>
-      <div class="dither-field">
-        <label for="replicateLayout">Replicate layout</label>
-        <select id="replicateLayout" onchange="autofillOptionChanged()">
-          <option value="pair-down">Side-by-side, fill down (A1+A2, B1+B2 …)</option>
-          <option value="pair-across">Side-by-side, fill across (A1+A2, A3+A4 …)</option>
-          <option value="stack-down">Stacked, fill down (A1+B1, C1+D1 …)</option>
-        </select>
-        <span class="hint" id="layoutHint"></span>
-      </div>
-      <div class="dither-field">
-        <label for="sampleOrder">Sample order within group</label>
-        <select id="sampleOrder" onchange="autofillOptionChanged()">
-          <option value="sequential">Sequential — manifest order, consecutive runs</option>
-          <option value="random">Randomised — seeded shuffle</option>
-        </select>
-        <span class="hint" id="sampleOrderHint"></span>
-      </div>
-      <div class="dither-field">
-        <label for="wellOrder">Well placement within plate</label>
-        <select id="wellOrder" onchange="autofillOptionChanged()">
-          <option value="grouped">Ordered — groups in contiguous column blocks</option>
-          <option value="grouped-random">Ordered, blocks shuffled — same blocks, seeded order</option>
-          <option value="grouped-balanced">Ordered, edge-balanced — blocks chosen to even out edge wells</option>
-          <option value="scatter">Scatter — randomise well pairs</option>
-          <option value="sequential">Sequential — deal order, A1→H10</option>
-        </select>
-        <span class="hint" id="wellOrderHint"></span>
-        <div style="margin-top:6px;">
-          <label for="edgeMargin" style="font-size:10px;">Warn if a group's edge share is off by more than (pp)</label>
-          <input type="number" id="edgeMargin" min="0" step="1" value="10" style="width:80px;"
-                 oninput="autofillOptionChanged()">
-        </div>
-      </div>
-      <div class="dither-field">
-        <label for="ditherSeed">Random seed</label>
-        <input type="text" id="ditherSeed" value="20260710" oninput="autofillOptionChanged()">
-        <span class="hint">Same seed → identical layout. Written to the Design Log sheet.</span>
-      </div>
-      <div class="dither-field">
-        <label for="replicateCount">Replicates per sample</label>
-        <select id="replicateCount" onchange="autofillOptionChanged()">
-          <option value="2">2 — side-by-side duplicate (40 samples/plate)</option>
-          <option value="1">1 — singlet (80 samples/plate)</option>
-        </select>
-      </div>
-      <div class="dither-field" style="grid-column:1 / -1;">
-        <label>Options</label>
-        <label class="toggle-wrap">
-          <input type="checkbox" id="keepSubjectTogether" checked onchange="autofillOptionChanged()">
-          <span>Keep every sample from one subject on the same plate (longitudinal draws stay together)</span>
-        </label>
-        <label class="toggle-wrap">
-          <input type="checkbox" id="partitionByType" onchange="autofillOptionChanged()">
-          <span>Never mix sample types on a plate — give each type its own plates (IgG normalisation differs between serum and CSF)</span>
-        </label>
-      </div>
-      <div class="dither-field" style="grid-column:1 / -1;">
-        <label>Bridging</label>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;">
-          <div>
-            <label for="minBridges" style="font-size:10px;">Minimum bridges per plate</label>
-            <input type="number" id="minBridges" min="0" step="1" value="2" style="width:110px;"
-                   oninput="autofillOptionChanged()">
+  <div class="autofill-modal af-wide">
+    <div class="af-head">
+      <h2 style="margin:0;">⚡ Autofill plates</h2>
+      <div class="af-sub">Serum, CSF and plasma only · cols 1–10 · controls stay manual</div>
+      <button type="button" class="af-x" onclick="closeAutofillModal()" aria-label="Close">×</button>
+    </div>
+
+    <div class="af-body">
+      <div class="af-settings">
+
+        <div class="af-sec">
+          <div class="af-eyebrow">Balance</div>
+          <div class="dither-controls">
+            <div class="dither-field">
+              <label for="layoutMode">Layout mode</label>
+              <select id="layoutMode" onchange="onLayoutModeChange(); autofillOptionChanged();">
+                <option value="dither">Dither groups across plates</option>
+                <option value="block">Block fill (v3 behaviour)</option>
+              </select>
+              <span class="hint" id="layoutModeHint"></span>
+            </div>
+            <div class="dither-field">
+              <label for="groupByField">Stratify by</label>
+              <select id="groupByField" onchange="autofillOptionChanged()"></select>
+              <span class="hint">The variable balanced across plates.</span>
+            </div>
+            <div class="dither-field" id="ditherWindowField">
+              <label for="ditherWindow">Window (plates)</label>
+              <input type="number" id="ditherWindow" min="1" step="1" value="4"
+                     oninput="this.dataset.touched=1; autofillOptionChanged();">
+              <span class="hint">N = all plates spreads each group over the whole run.</span>
+            </div>
           </div>
-          <label class="toggle-wrap" style="margin:0;flex:1;min-width:280px;">
+        </div>
+
+        <div class="af-sec">
+          <div class="af-eyebrow">Replicates</div>
+          <!-- The three layouts, drawn. "Side-by-side, fill down" is a sentence
+               you have to parse; the dots are the same fact at a glance. -->
+          <div class="rep-opts" id="repLayoutPicker" role="radiogroup" aria-label="Replicate layout"></div>
+          <label class="sr-only" for="replicateLayout">Replicate layout</label>
+          <select class="sr-only" id="replicateLayout" onchange="syncReplicatePickers(); autofillOptionChanged();">
+            <option value="pair-down">Side-by-side, fill down (A1+A2, B1+B2 …)</option>
+            <option value="pair-across">Side-by-side, fill across (A1+A2, A3+A4 …)</option>
+            <option value="stack-down">Stacked, fill down (A1+B1, C1+D1 …)</option>
+          </select>
+          <span class="hint" id="layoutHint"></span>
+          <div class="rep-count" id="repCountPicker" role="radiogroup" aria-label="Replicates per sample"></div>
+          <label class="sr-only" for="replicateCount">Replicates per sample</label>
+          <select class="sr-only" id="replicateCount" onchange="syncReplicatePickers(); autofillOptionChanged();">
+            <option value="2">2 — side-by-side duplicate (40 samples/plate)</option>
+            <option value="1">1 — singlet (80 samples/plate)</option>
+          </select>
+        </div>
+
+        <div class="af-sec">
+          <div class="af-eyebrow">Order</div>
+          <div class="dither-controls">
+            <div class="dither-field">
+              <label for="sampleOrder">Sample order in group</label>
+              <select id="sampleOrder" onchange="autofillOptionChanged()">
+                <option value="sequential">Sequential — manifest order, consecutive runs</option>
+                <option value="random">Randomised — seeded shuffle</option>
+              </select>
+              <span class="hint" id="sampleOrderHint"></span>
+            </div>
+            <div class="dither-field">
+              <label for="wellOrder">Well placement</label>
+              <select id="wellOrder" onchange="autofillOptionChanged()">
+                <option value="grouped">Ordered — groups in contiguous column blocks</option>
+                <option value="grouped-random">Ordered, blocks shuffled — same blocks, seeded order</option>
+                <option value="grouped-balanced">Ordered, edge-balanced — blocks chosen to even out edge wells</option>
+                <option value="scatter">Scatter — randomise well pairs</option>
+                <option value="sequential">Sequential — deal order, A1→H10</option>
+              </select>
+              <span class="hint" id="wellOrderHint"></span>
+              <div style="margin-top:6px;">
+                <label for="edgeMargin" style="font-size:10px;">Warn if a group's edge share is off by more than (pp)</label>
+                <input type="number" id="edgeMargin" min="0" step="1" value="10" style="width:80px;"
+                       oninput="autofillOptionChanged()">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="af-sec">
+          <div class="af-eyebrow">Constraints</div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="keepSubjectTogether" checked onchange="autofillOptionChanged()">
+            <span>Keep every sample from one subject on the same plate (longitudinal draws stay together)</span>
+          </label>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="partitionByType" onchange="autofillOptionChanged()">
+            <span>Never mix sample types on a plate — give each type its own plates
+                  (IgG normalisation differs between serum and CSF)</span>
+          </label>
+          <label class="toggle-wrap">
             <input type="checkbox" id="rotateBridges" onchange="autofillOptionChanged()">
             <span>Keep the first bridge in a fixed well on every plate, but rotate the rest
                   to seeded positions — otherwise plate effect and position effect cannot be separated</span>
           </label>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-top:8px;">
+            <div>
+              <label for="minBridges" style="font-size:10px;">Min. bridges / plate</label>
+              <input type="number" id="minBridges" min="0" step="1" value="2" style="width:92px;"
+                     oninput="autofillOptionChanged()">
+            </div>
+            <div>
+              <label for="ditherSeed" style="font-size:10px;">Seed</label>
+              <input type="text" id="ditherSeed" value="20260710" style="width:120px;"
+                     oninput="autofillOptionChanged()">
+            </div>
+            <button type="button" class="btn btn-ghost" style="padding:5px 11px;font-size:11px;"
+                    onclick="rerollSeed()" title="A fresh seed gives a different but equally valid layout">Reroll</button>
+            <span class="hint" style="flex:1;min-width:190px;">Same seed → identical layout.
+              Written to the Design Log sheet.</span>
+          </div>
+        </div>
+
+        <div class="af-sec">
+          <div class="af-eyebrow">Volume check
+            <span class="hint" style="display:inline;font-weight:400;text-transform:none;letter-spacing:0;">
+              — values are this lab's; edit them for yours</span>
+          </div>
+          <label class="toggle-wrap">
+            <input type="checkbox" id="volumeCheckOn" checked onchange="autofillOptionChanged()">
+            <span>Flag samples without enough volume before they reach the bench</span>
+          </label>
+          <div id="volumeRuleRows" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(215px,1fr));gap:8px;margin-top:8px;"></div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
+            <div>
+              <label for="deadVolume" style="font-size:10px;">Dead volume per sample (µL)</label>
+              <input type="number" id="deadVolume" min="0" step="1" value="0" style="width:110px;"
+                     oninput="onVolumeSettingChanged()">
+            </div>
+            <div>
+              <label for="freezeThawMax" style="font-size:10px;">Warn above N freeze–thaws</label>
+              <input type="number" id="freezeThawMax" min="0" step="1" placeholder="no check" style="width:110px;"
+                     oninput="onVolumeSettingChanged()">
+            </div>
+            <span class="hint" style="flex:1;min-width:200px;">Per-sample overrides come from an optional
+              <code>min_volume_required_mL</code> column and win over these rules.</span>
+          </div>
         </div>
       </div>
-      <div class="dither-field" style="grid-column:1 / -1;">
-        <label>Volume check <span class="hint" style="display:inline;font-weight:400;">— values are this lab's; edit them for yours</span></label>
-        <label class="toggle-wrap">
-          <input type="checkbox" id="volumeCheckOn" checked onchange="autofillOptionChanged()">
-          <span>Flag samples without enough volume before they reach the bench</span>
-        </label>
-        <div id="volumeRuleRows" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:8px;"></div>
-        <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;align-items:flex-end;">
-          <div>
-            <label for="deadVolume" style="font-size:10px;">Dead volume per sample (µL)</label>
-            <input type="number" id="deadVolume" min="0" step="1" value="0" style="width:110px;"
-                   oninput="onVolumeSettingChanged()">
+
+      <div class="af-preview">
+        <div class="af-pv-head">
+          <span class="af-eyebrow" style="margin:0;">Preview</span>
+          <div class="af-pv-nav">
+            <button type="button" onclick="afPreviewStep(-1)" id="afPrevBtn" aria-label="Previous plate">◀</button>
+            <span id="afPreviewLabel">no plan yet</span>
+            <button type="button" onclick="afPreviewStep(1)" id="afNextBtn" aria-label="Next plate">▶</button>
           </div>
-          <div>
-            <label for="freezeThawMax" style="font-size:10px;">Warn above N freeze–thaws</label>
-            <input type="number" id="freezeThawMax" min="0" step="1" placeholder="no check" style="width:110px;"
-                   oninput="onVolumeSettingChanged()">
-          </div>
-          <span class="hint" style="flex:1;min-width:220px;">Per-sample overrides come from an optional
-            <code>min_volume_required_mL</code> column and win over these rules.</span>
         </div>
+        <div class="af-grid" id="afPreviewGrid"></div>
+        <div class="af-stats" id="afStats"></div>
+        <div id="afVolWarn"></div>
+        <div class="autofill-preview" id="autofillPreview"><span style="color:var(--muted)">Adjust the
+          options on the left — the preview updates as you go.</span></div>
       </div>
     </div>
-    <div class="autofill-preview" id="autofillPreview"><span style="color:var(--muted)">Set the options above, then click “Preview” to calculate the layout…</span></div>
-    <div class="modal-actions">
+
+    <div class="modal-actions af-foot">
+      <span class="af-foot-note" id="afFootNote">Replaces sample wells only. Seed and settings are written to the Design Log.</span>
       <button class="btn btn-ghost" onclick="closeAutofillModal()">Cancel</button>
       <button class="btn btn-ghost" onclick="previewAutofill()">Preview</button>
       <button class="btn btn-primary" id="applyAutofillBtn" onclick="applyAutofill()" disabled>Apply</button>
@@ -1559,7 +2089,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '17948df';
+const DESIGNER_BUILD = 'bf7b849+local changes';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -1655,6 +2185,14 @@ try {
 document.addEventListener('DOMContentLoaded', () => {
   const badge = document.getElementById('versionBadge');
   if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
+  // A menu that stays open after you have clicked past it reads as stuck.
+  document.addEventListener('click', ev => {
+    const split = document.getElementById('exportSplit');
+    if (split && !split.contains(ev.target)) closeExportMenu();
+  });
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') closeExportMenu();
+  });
   loadVolumeSettings();
   buildVolumeRuleRows();
   try {
@@ -1820,6 +2358,7 @@ function restoreSavedSession() {
   updateStats();
 
   document.getElementById('mainUI').classList.remove('hidden');
+  showChrome(true);
   uploadZone.style.display = 'none';
   document.getElementById('fileName').textContent = originalFileName;
   const banner = document.getElementById('restoredBanner');
@@ -1916,6 +2455,7 @@ function resetDesigner() {
 
   // Back to the upload screen
   document.getElementById('mainUI').classList.add('hidden');
+  showChrome(false);
   document.getElementById('autofillOverlay').classList.add('hidden');
   document.getElementById('wellEditOverlay').classList.add('hidden');
   uploadZone.style.display = '';
@@ -1978,6 +2518,7 @@ function processFile(file) {
       if (n < 0) {                       // refused: newer schema
         uploadZone.style.display = '';
         document.getElementById('mainUI').classList.add('hidden');
+  showChrome(false);
         return;
       }
       if (n > 0) {
@@ -2000,6 +2541,7 @@ function processFile(file) {
       updateStats();
     }
     document.getElementById('mainUI').classList.remove('hidden');
+  showChrome(true);
     uploadZone.style.display = 'none';
     document.getElementById('fileName').textContent = file.name;
     const banner = document.getElementById('restoredBanner');
@@ -2691,6 +3233,27 @@ function toggleAreaUnlock() {
   renderPlate();
 }
 
+function updatePlateHead() {
+  const n = document.getElementById('plateHeadNum');
+  const d = document.getElementById('plateHeadDesc');
+  if (n) n.textContent = String(currentPlate);
+  if (!d) return;
+  const a = plateAssignments[currentPlate] || {};
+  const held = Object.keys(a).length;
+  let ctrl = 0, bridge = 0;
+  Object.values(a).forEach(x => {
+    const src = byTiu[x.tiu_id];
+    if (isAnyControl(src)) ctrl++;
+    else if (isBridged(src)) bridge++;
+  });
+  const bits = [`${held - ctrl - bridge} sample well(s)`];
+  if (bridge) bits.push(`${bridge} bridge`);
+  if (ctrl) bits.push(`${ctrl} control`);
+  bits.push(`controls in ${describeReserved(currentPlate)}` +
+            (plateReserved[currentPlate] ? '' : ' (run default)'));
+  d.textContent = bits.join(' · ');
+}
+
 function updateControlAreaLabel() {
   const el = document.getElementById('controlAreaLabel');
   if (!el) return;
@@ -2839,8 +3402,14 @@ function renderPlate() {
     grid.setAttribute('aria-label', `Plate ${currentPlate} of ${totalPlates}`);
   }
   const assignments = plateAssignments[currentPlate] || {};
+  grid.classList.toggle('detail', wellDensity === 'detail');
+  const typeMap = colourBy === 'type' ? typeColourMap() : null;
   grid.innerHTML = '';
-  document.getElementById('plateLabel').textContent = `Plate ${currentPlate} / ${totalPlates}`;
+  document.getElementById('plateLabel').innerHTML =
+    `Plate ${currentPlate} <span>of ${totalPlates}</span>`;
+  const pv = document.getElementById('platePrev'), nx = document.getElementById('plateNext');
+  if (pv) pv.disabled = currentPlate <= 1;
+  if (nx) nx.disabled = currentPlate >= totalPlates;
 
   // Top-left corner
   grid.appendChild(makeEl('div', 'col-header', ''));
@@ -2893,7 +3462,13 @@ function renderPlate() {
 
       if (assigned) {
         const isCtrl = assignedSampleObj && (isAnyControl(assignedSampleObj) || isBridged(assignedSampleObj));
-        const color = isCtrlAssigned ? '#8a6a00' : (sampleColorMap[assigned.tiu_id] || '#4fb8ff');
+        const byMode = wellColourFor(assigned, assignedSampleObj, currentPlate, key, typeMap);
+        // Controls keep their own colour under cohort/type, because "which
+        // control" matters more there than which cohort it belongs to. Under
+        // index and volume the mode wins — that is the question being asked.
+        const modeWins = (colourBy === 'index' || colourBy === 'volume');
+        const color = (isCtrlAssigned && !modeWins) ? '#8a6a00'
+                    : (byMode || sampleColorMap[assigned.tiu_id] || '#4fb8ff');
         div.style.background = hexToRgba(color, isCtrlAssigned ? 0.15 : 0.2);
         div.style.borderColor = color;
         div.style.color = color;
@@ -2909,7 +3484,16 @@ function renderPlate() {
         lab.className = 'well-label';
         const glyph = glyphFor(assignedSampleObj);
         lab.textContent = glyph ? `${glyph} ${short}` : short;
+        if (wellDensity === 'detail') lab.textContent = glyph
+          ? `${glyph} ${assigned.input_id}` : assigned.input_id;
         div.appendChild(lab);
+
+        if (wellDensity === 'detail') {
+          const sub = document.createElement('span');
+          sub.className = 'well-sub';
+          sub.textContent = subLabelFor(assigned, assignedSampleObj, currentPlate, key);
+          div.appendChild(sub);
+        }
 
         const meta = [];
         if (assignedSampleObj) {
@@ -2962,6 +3546,10 @@ function renderPlate() {
   updateAssignmentList();
   updatePlateProgress();
   updateControlAreaLabel();
+  updatePlateHead();
+  renderPlateTabs();
+  renderLegend();
+  updateInspector();
   updateCohortProgress();
 }
 
@@ -4148,7 +4736,11 @@ function openAutofillModal() {
   if (!win.dataset.touched) win.value = Math.min(4, Math.max(1, totalPlates));
   onLayoutModeChange();
   onWellOrderChange();
+  buildReplicatePickers();
+  afPreviewPlate = null;
+  renderAutofillPreviewGrid();
   document.getElementById('autofillOverlay').classList.remove('hidden');
+  autofillOptionChanged();          // the dialog opens with a preview already in it
 }
 
 function closeAutofillModal() {
@@ -4268,12 +4860,26 @@ function balanceTableHtml(res, opts) {
   </div>`;
 }
 
+let livePreviewTimer = null;
+
 function autofillOptionChanged() {
   onWellOrderChange();
+  syncReplicatePickers();
   autofillPlan = null;
   document.getElementById('applyAutofillBtn').disabled = true;
   document.getElementById('autofillPreview').innerHTML =
-    '<span style="color:var(--muted)">Options changed — click “Preview” to recalculate.</span>';
+    '<span style="color:var(--muted)">Recalculating…</span>';
+  // Planning a 2000-sample run is not instant, so the recompute waits for a
+  // pause in typing rather than running on every keystroke.
+  if (livePreviewTimer) clearTimeout(livePreviewTimer);
+  livePreviewTimer = setTimeout(() => {
+    livePreviewTimer = null;
+    if (document.getElementById('autofillOverlay').classList.contains('hidden')) return;
+    try { previewAutofill(true); } catch (e) {
+      document.getElementById('autofillPreview').innerHTML =
+        '<span style="color:var(--muted)">Could not plan with these options — click “Preview” for the detail.</span>';
+    }
+  }, 260);
 }
 
 function escHtml(s) {
@@ -4282,11 +4888,12 @@ function escHtml(s) {
 
 let volumePreflightShown = false;
 
-function previewAutofill() {
+function previewAutofill(silent) {
   const opts = readAutofillOptions();
   // The pre-flight is shown once per set of rules, before the first preview
-  // that would be affected by it — not on every click.
-  if (!volumePreflightShown && volumeCheckEnabled()) {
+  // that would be affected by it — not on every click, and never on the live
+  // recompute that follows a keystroke.
+  if (!silent && !volumePreflightShown && volumeCheckEnabled()) {
     const { short, thawed } = runVolumeCheck(opts.replicates);
     if (short.length || thawed.length) {
       volumePreflightShown = true;
@@ -4302,7 +4909,9 @@ function previewAutofill() {
     box.innerHTML = 'No unassigned serum/CSF/plasma samples to place.' +
       (res.skippedTypes.length ? `<br><br>Skipped (manual placement): ${escHtml(res.skippedTypes.join(', '))}` : '');
     autofillPlan = null;
+    lastPlanMeta = null;
     document.getElementById('applyAutofillBtn').disabled = true;
+    renderAutofillPreviewGrid();
     return;
   }
 
@@ -4446,6 +5055,7 @@ function previewAutofill() {
     `<div class="pv-notes">${notes.join('<br>')}</div>`;
 
   document.getElementById('applyAutofillBtn').disabled = false;
+  renderAutofillPreviewGrid();
 }
 
 function applyAutofill() {
@@ -4482,6 +5092,7 @@ function applyAutofill() {
 
 // ─── UI Updates ───────────────────────────────────────────────────────────────
 function updateSelectionBanner() {
+  updateInspector();
   const banner = document.getElementById('selectionBanner');
   if (selectedWells.size > 0) {
     banner.classList.remove('hidden');
@@ -4585,7 +5196,749 @@ function updatePlateProgress() {
     (comp.mixed ? ` <span class="mixed-flag">MIXED PREP</span>` : '');
 }
 
+// ─── Chrome: views, export menu, validate badge (mockup 1a) ──────────────────
+// The chrome is hidden until a manifest is loaded — an empty toolbar invites
+// clicks that can only fail.
+let currentView = 'editor';
+
+const CHROME_IDS = ['fileChip', 'viewTabs', 'mainToolbar', 'plateTabs', 'areaRow',
+                    'newManifestBtn', 'exportSplit'];
+
+function showChrome(on) {
+  CHROME_IDS.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', !on);
+  });
+}
+
+function switchView(name) {
+  currentView = (name === 'overview') ? 'overview' : 'editor';
+  const ed = document.getElementById('viewEditor');
+  const ov = document.getElementById('viewOverview');
+  if (ed) ed.classList.toggle('hidden', currentView !== 'editor');
+  if (ov) ov.classList.toggle('hidden', currentView !== 'overview');
+  // The toolbar acts on one plate, so it has nothing to do in the run view.
+  ['mainToolbar', 'plateTabs', 'areaRow'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.classList.toggle('hidden', currentView !== 'editor');
+  });
+  const te = document.getElementById('tabEditor'), to = document.getElementById('tabOverview');
+  if (te) te.setAttribute('aria-selected', String(currentView === 'editor'));
+  if (to) to.setAttribute('aria-selected', String(currentView === 'overview'));
+  if (currentView === 'overview') renderOverview();
+}
+
+function toggleExportMenu(ev) {
+  if (ev) ev.stopPropagation();
+  const m = document.getElementById('exportMenu');
+  const c = document.getElementById('exportCaret');
+  if (!m) return;
+  const open = m.classList.contains('hidden');
+  m.classList.toggle('hidden', !open);
+  if (c) c.setAttribute('aria-expanded', String(open));
+}
+
+function closeExportMenu() {
+  const m = document.getElementById('exportMenu');
+  const c = document.getElementById('exportCaret');
+  if (m) m.classList.add('hidden');
+  if (c) c.setAttribute('aria-expanded', 'false');
+}
+
+function runExport(kind) {
+  closeExportMenu();
+  if (kind === 'excel') downloadExcel();
+  else if (kind === 'wellmap') downloadWellMapCsv();
+  else if (kind === 'worklist') downloadWorklistCsv();
+  else if (kind === 'gwl') downloadTecanGwl();
+}
+
+// The count on the Validate button. validateLayout() walks every well, so on a
+// 2000-sample run it is not free — it is debounced and only ever runs on idle,
+// never inside a render.
+let validateBadgeTimer = null;
+
+function scheduleValidateBadge() {
+  if (validateBadgeTimer) clearTimeout(validateBadgeTimer);
+  validateBadgeTimer = setTimeout(() => { validateBadgeTimer = null; updateValidateBadge(); }, 300);
+}
+
+function validationCounts() {
+  try {
+    const res = validateLayout();
+    return { errors: res.errors.length, warnings: res.warnings.length };
+  } catch (e) {
+    return null;                       // never let a badge break the page
+  }
+}
+
+function updateValidateBadge() {
+  const btn = document.getElementById('validateBtn');
+  const badge = document.getElementById('validateBadge');
+  if (!btn || !badge) return;
+  btn.classList.remove('has-err', 'has-warn', 'is-clean');
+  if (!samples.length) { badge.classList.add('hidden'); return; }
+  const c = validationCounts();
+  if (!c) { badge.classList.add('hidden'); return; }
+  const n = c.errors + c.warnings;
+  if (n === 0) {
+    btn.classList.add('is-clean');
+    badge.textContent = '✓';
+    badge.classList.remove('hidden');
+    btn.title = 'No errors or warnings — click for the full report';
+    return;
+  }
+  btn.classList.add(c.errors ? 'has-err' : 'has-warn');
+  badge.textContent = String(n);
+  badge.classList.remove('hidden');
+  btn.title = `${c.errors} error(s), ${c.warnings} warning(s) — click for the full report`;
+}
+
+// ─── Plate tabs, well colouring and density (mockup 1b) ─────────────────────
+let colourBy = 'cohort';        // cohort | type | index | volume
+let wellDensity = 'compact';    // compact | detail
+
+// Sample type has no palette of its own — it borrows the cohort one, keyed on
+// the sorted type list so a type keeps its colour as plates change.
+function typeColourMap() {
+  const types = [...new Set(samples.map(s => (s.sample_type || '').trim()).filter(Boolean))].sort();
+  const palette = paletteInUse();
+  const m = {};
+  types.forEach((t, i) => { m[t] = palette[i % palette.length]; });
+  return m;
+}
+
+const INDEX_DONE = '#2d5a3d', INDEX_TODO = '#c79a00';
+const VOL_OK = '#2d5a3d', VOL_SHORT = '#b84040', VOL_UNKNOWN = '#9a9486';
+
+// One well's colour under the current mode. Returning null means "no opinion" —
+// the caller falls back to the neutral assigned colour.
+function wellColourFor(assigned, sampleObj, plate, well, typeMap) {
+  if (!assigned) return null;
+  if (colourBy === 'cohort') {
+    return sampleColorMap[assigned.tiu_id] || NO_COHORT_COLOR;
+  }
+  if (colourBy === 'type') {
+    const t = sampleObj && (sampleObj.sample_type || '').trim();
+    return (t && (typeMap || typeColourMap())[t]) || NO_COHORT_COLOR;
+  }
+  if (colourBy === 'index') {
+    const uid = mintLibraryUid(assigned.tiu_id, plate, well);
+    return indexAssignments[uid] ? INDEX_DONE : INDEX_TODO;
+  }
+  if (colourBy === 'volume') {
+    if (!sampleObj) return VOL_UNKNOWN;
+    const reps = replicateCountOf(assigned.tiu_id, plate);
+    const need = volumeRequirement(sampleObj, reps);
+    const have = parseFloat(sampleObj.volume_mL);
+    if (!need || !Number.isFinite(have)) return VOL_UNKNOWN;
+    return (have * 1000) < need.uL ? VOL_SHORT : VOL_OK;
+  }
+  return null;
+}
+
+// How many wells this sample holds on this plate — the divisor the volume
+// requirement scales on.
+function replicateCountOf(tiu_id, plate) {
+  const a = plateAssignments[plate] || {};
+  let n = 0;
+  Object.values(a).forEach(x => { if (x.tiu_id === tiu_id) n++; });
+  return n || 1;
+}
+
+function setColourBy(mode) {
+  colourBy = mode;
+  document.querySelectorAll('#colourBySeg button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.cb === mode)));
+  renderPlate();
+}
+
+function setWellDensity(mode) {
+  wellDensity = mode;
+  document.querySelectorAll('#densitySeg button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.den === mode)));
+  renderPlate();
+}
+
+function plateFillPct(p) {
+  const held = Object.keys(plateAssignments[p] || {}).length;
+  return Math.round(held / 96 * 100);
+}
+
+function renderPlateTabs() {
+  const box = document.getElementById('plateTabs');
+  if (!box) return;
+  box.innerHTML = '';
+  for (let p = 1; p <= totalPlates; p++) {
+    const pct = plateFillPct(p);
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'plate-tab';
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-current', String(p === currentPlate));
+    b.title = `Plate ${p} — ${Object.keys(plateAssignments[p] || {}).length} of 96 wells`;
+    b.innerHTML = `<span class="n">P${p}</span>` +
+      `<span class="track"><span class="fill${pct && pct < 100 ? ' partial' : ''}" style="width:${pct}%"></span></span>`;
+    b.addEventListener('click', () => goToPlate(p));
+    box.appendChild(b);
+  }
+}
+
+function goToPlate(p) {
+  if (p < 1 || p > totalPlates || p === currentPlate) return;
+  currentPlate = p;
+  clearSelection();
+  renderPlate();
+}
+
+// The legend describes what is actually on the plate rather than a fixed list,
+// so it never claims a state the run does not use.
+function renderLegend() {
+  const box = document.getElementById('plateLegend');
+  if (!box) return;
+  const a = plateAssignments[currentPlate] || {};
+  const has = { ctrl: false, bridge: false, sample: false };
+  Object.values(a).forEach(x => {
+    const src = byTiu[x.tiu_id];
+    if (isAnyControl(src)) has.ctrl = true;
+    else if (isBridged(src)) has.bridge = true;
+    else has.sample = true;
+  });
+  const sq = wellDensity === 'detail' ? ' sq' : '';
+  const items = [
+    ['Empty', 'var(--border)', 'var(--empty)'],
+    ['Selected', 'var(--accent)', 'var(--accent-light)']
+  ];
+  const label = { cohort: 'Sample (cohort colour)', type: 'Sample (type colour)',
+                  index: 'Index assigned', volume: 'Volume OK' }[colourBy] || 'Sample';
+  if (has.sample) {
+    const c = colourBy === 'index' ? INDEX_DONE : colourBy === 'volume' ? VOL_OK : 'var(--assigned)';
+    items.push([label, c, hexToRgba(colourBy === 'cohort' || colourBy === 'type' ? '#3a6b8a' : c, 0.2)]);
+  }
+  if (colourBy === 'index') items.push(['Index not assigned', INDEX_TODO, hexToRgba(INDEX_TODO, 0.2)]);
+  if (colourBy === 'volume') items.push(['Below minimum volume', VOL_SHORT, hexToRgba(VOL_SHORT, 0.2)]);
+  if (has.bridge) items.push(['Bridge', '#7a4f9a', hexToRgba('#7a4f9a', 0.18)]);
+  if (has.ctrl) items.push(['Control', '#8a6a00', hexToRgba('#8a6a00', 0.15)]);
+  if (reservedOn(currentPlate).size)
+    items.push(['Reserved for controls', 'var(--border)', 'var(--surface2)']);
+  box.innerHTML = items.map(([n, bd, bg]) =>
+    `<div class="legend-item"><div class="legend-dot${sq}" style="border-color:${bd};background:${bg}"></div>${escHtml(n)}</div>`
+  ).join('');
+}
+
+// ─── Selection inspector (mockup 1b) ────────────────────────────────────────
+// What the labelled well shows under the identifier: whatever the current
+// colour mode is encoding, so the text and the colour never disagree.
+function subLabelFor(assigned, sampleObj, plate, well) {
+  if (colourBy === 'index') {
+    const idx = indexAssignments[mintLibraryUid(assigned.tiu_id, plate, well)];
+    return idx ? (idx.name || idx.well || 'indexed') : 'no index';
+  }
+  if (colourBy === 'volume') {
+    const have = sampleObj && parseFloat(sampleObj.volume_mL);
+    return Number.isFinite(have) ? `${have} mL` : 'no volume';
+  }
+  if (!sampleObj) return '';
+  if (colourBy === 'type') return sampleObj.sample_type || '';
+  return [sampleObj.cohort, sampleObj.sample_type].filter(Boolean).join(' · ');
+}
+
+function updateInspector() {
+  const c = document.getElementById('inspCount');
+  const r = document.getElementById('inspRange');
+  if (!c || !r) return;
+  const n = selectedWells.size;
+  c.textContent = n === 1 ? '1 well' : `${n} wells`;
+  if (!n) { r.textContent = ''; renderInspectorMatches(); return; }
+  const sorted = [...selectedWells].sort((a, b) =>
+    a[0].localeCompare(b[0]) || parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10));
+  r.textContent = n === 1 ? sorted[0] : `${sorted[0]}–${sorted[n - 1]}`;
+  renderInspectorMatches();
+}
+
+// Candidates for the current selection. Unplaced samples come first, then
+// anything bridged or control, which may legitimately go down again.
+//
+// A search that matches only placed samples still returns them, marked. The
+// alternative — an empty list for a sample the user can see in the manifest —
+// reads as "no such sample", which is a different and wrong answer.
+function inspectorCandidates(q) {
+  const needle = (q || '').trim().toLowerCase();
+  const placed = new Set();
+  Object.values(plateAssignments).forEach(pl =>
+    Object.values(pl).forEach(x => placed.add(x.tiu_id)));
+  const hit = s => !needle || [s.input_id, s.tiu_id, s.cohort, s.sample_type, s.subject_id]
+    .some(v => String(v || '').toLowerCase().includes(needle));
+  const free = [], used = [];
+  samples.forEach(s => {
+    if (!hit(s)) return;
+    if (!placed.has(s.tiu_id) || isBridged(s) || isAnyControl(s)) free.push(s);
+    else used.push(Object.assign(Object.create(Object.getPrototypeOf(s)), s, { _placed: true }));
+  });
+  return free.concat(needle ? used : []).slice(0, 40);
+}
+
+function renderInspectorMatches() {
+  const box = document.getElementById('inspMatches');
+  if (!box) return;
+  const q = (document.getElementById('inspSearch') || {}).value || '';
+  const list = inspectorCandidates(q);
+  const chosen = (document.getElementById('assignSelect') || {}).value || '';
+  if (!list.length) {
+    box.innerHTML = `<div style="padding:10px;font-size:11.5px;color:var(--muted);">${
+      q ? 'Nothing matches “' + escHtml(q) + '”.' : 'Every sample is placed.'}</div>`;
+    return;
+  }
+  box.innerHTML = list.map(s => {
+    const meta = [s.sample_type, s.subject_id].filter(Boolean).join(' · ');
+    const vol = Number.isFinite(parseFloat(s.volume_mL)) ? ` · ${s.volume_mL} mL` : '';
+    const mark = s._placed ? 'placed' : isBridged(s) ? '↻' : isAnyControl(s) ? '🧪' : '';
+    return `<button type="button" class="match-row${s.tiu_id === chosen ? ' on' : ''}" data-tiu="${escHtml(s.tiu_id)}"${
+      s._placed ? ' title="Already on a plate — assigning it again puts it in a second place"' : ''}>
+      <span class="dot" style="background:${sampleColorMap[s.tiu_id] || NO_COHORT_COLOR}"></span>
+      <span><span class="id">${escHtml(s.input_id)}</span><br>
+        <span class="meta">${escHtml(meta + vol)}</span></span>
+      <span class="hint">${mark}</span>
+    </button>`;
+  }).join('');
+  box.querySelectorAll('.match-row').forEach(el =>
+    el.addEventListener('click', () => pickInspectorMatch(el.dataset.tiu)));
+}
+
+// assignSelect lists unplaced samples only, so setting .value to a sample the
+// inspector surfaced (a bridge, a control, or a placed sample found by search)
+// would silently not take. Give the select the option before choosing it.
+function pickInspectorMatch(tiu) {
+  const sel = document.getElementById('assignSelect');
+  if (!sel) return;
+  const src = byTiu[tiu];
+  if (src && ![...sel.options].some(o => o.value === tiu)) {
+    const o = document.createElement('option');
+    o.value = tiu;
+    o.textContent = `${src.input_id} — ${[src.cohort, src.sample_type].filter(Boolean).join(' · ')}`;
+    sel.appendChild(o);
+  }
+  sel.value = tiu;
+  renderInspectorMatches();
+}
+
+function onAssignSelectChanged() { renderInspectorMatches(); }
+
+// ↵ assigns to this plate, ⇧↵ to the same wells on every plate — the two
+// things you actually do, without reaching for the mouse.
+function inspectorKey(ev) {
+  if (ev.key !== 'Enter') return;
+  ev.preventDefault();
+  const sel = document.getElementById('assignSelect');
+  if (sel && !sel.value) {
+    const first = inspectorCandidates(ev.target.value)[0];
+    if (first) pickInspectorMatch(first.tiu_id);
+  }
+  if (!sel || !sel.value) return;
+  if (ev.shiftKey) assignSelectedAllPlates(); else assignSelected();
+  renderInspectorMatches();
+}
+
+// ─── Run overview (mockup 1c) ───────────────────────────────────────────────
+// Kept as a model separate from its rendering: the numbers here are the ones a
+// methods section quotes, so they are worth testing without a DOM.
+let ovSelectedPlate = 1;
+
+function overviewModel() {
+  const list = Array.from({ length: totalPlates }, (_, i) => i + 1);
+  const cohorts = Object.keys(cohortColorMap).sort();
+  const minBridge = minBridgesRequired();
+  const cov = bridgeCoverage();
+
+  // Run-wide cohort share — the dashed reference every plate is read against.
+  const runCount = {};
+  let runTotal = 0;
+  list.forEach(p => Object.values(plateAssignments[p] || {}).forEach(a => {
+    const src = byTiu[a.tiu_id];
+    if (!src || isAnyControl(src)) return;       // controls are not a cohort
+    const c = src.cohort || 'No cohort';
+    runCount[c] = (runCount[c] || 0) + 1;
+    runTotal++;
+  }));
+
+  // Only cohorts that actually carry samples. A control-type cohort has all of
+  // its wells excluded above, so listing it would add a zero-width band and a
+  // legend entry to a chart that is about sample balance.
+  const names = (cohorts.length ? cohorts : Object.keys(runCount).sort())
+    .filter(c => (runCount[c] || 0) > 0);
+  const runShare = names.map(c => (runTotal ? (runCount[c] || 0) / runTotal : 0));
+  // Cumulative, because the reference lines sit at the boundaries of a
+  // stacked bar rather than at each share.
+  const refs = [];
+  let acc = 0;
+  runShare.forEach((v, i) => { acc += v; if (i < runShare.length - 1) refs.push(acc); });
+
+  let unplacedBridges = 0;
+  const plates = list.map(p => {
+    const a = plateAssignments[p] || {};
+    const res = reservedOn(p);
+    const held = Object.keys(a).length;
+    let ctrl = 0;
+    const count = {};
+    Object.values(a).forEach(x => {
+      const src = byTiu[x.tiu_id];
+      if (src && isAnyControl(src)) { ctrl++; return; }
+      const c = (src && src.cohort) || 'No cohort';
+      count[c] = (count[c] || 0) + 1;
+    });
+    const samplesOn = held - ctrl;
+    // Room left for samples: every unreserved well that has nothing in it.
+    let freeSample = 0;
+    ROWS.forEach(r => COLS.forEach(cn => {
+      const w = `${r}${cn}`;
+      if (!a[w] && !res.has(w)) freeSample++;
+    }));
+    const bridges = (cov.perPlate[p] || []).length;
+
+    let status = 'OK', tone = 'ok';
+    if (!held) { status = 'empty'; tone = 'warn'; }
+    else if (bridges < minBridge) { status = `${bridges} of ${minBridge} bridges`; tone = 'warn'; }
+    else if (freeSample > 0) { status = `${freeSample} empty sample well(s)`; tone = 'warn'; }
+    if (held && bridges < minBridge) unplacedBridges++;
+
+    return {
+      plate: p, name: `Plate ${p}`, held, controls: ctrl, samples: samplesOn,
+      freeSample, bridges, status, tone,
+      segs: names.map((c, i) => ({
+        name: c, n: count[c] || 0,
+        pct: samplesOn ? (count[c] || 0) / samplesOn : 0,
+        colour: cohortColorMap[c] || NO_COHORT_COLOR
+      }))
+    };
+  });
+
+  const placed = new Set();
+  Object.values(plateAssignments).forEach(pl =>
+    Object.values(pl).forEach(x => { if (!isAnyControl(byTiu[x.tiu_id])) placed.add(x.tiu_id); }));
+  const eligible = samples.filter(isAutofillable);
+  const bridgeIds = new Set();
+  Object.values(cov.perPlate).forEach(l => l.forEach(b => bridgeIds.add(b.tiu_id)));
+
+  return {
+    plates, names, runShare, refs, refsPct: refs.map(r => r * 100),
+    review: plates.filter(p => p.tone !== 'ok').length,
+    kpis: [
+      { v: String(placed.size), l: 'samples placed' },
+      { v: String(Math.max(0, eligible.length - placed.size)), l: 'unplaced' },
+      { v: String(bridgeIds.size), l: 'bridges' },
+      { v: String(plates.filter(p => p.tone !== 'ok').length), l: 'plates to review' }
+    ]
+  };
+}
+
+function renderOverview() {
+  const m = overviewModel();
+  if (ovSelectedPlate > totalPlates) ovSelectedPlate = 1;
+
+  const sub = document.getElementById('ovSubtitle');
+  if (sub) {
+    const meta = appliedPlanSummary || {};
+    sub.textContent = [originalFileName || 'no manifest',
+      meta.seed ? `seed ${meta.seed}` : null,
+      meta.effectiveWindow ? `dither over ${meta.effectiveWindow} plate(s)` : null
+    ].filter(Boolean).join(' · ');
+  }
+
+  const kp = document.getElementById('ovKpis');
+  if (kp) kp.innerHTML = m.kpis.map(k =>
+    `<div class="ov-kpi"><div class="v">${escHtml(k.v)}</div><div class="l">${escHtml(k.l)}</div></div>`).join('');
+
+  // Plate cards — 96 dots is the smallest picture that still shows shape.
+  const cards = document.getElementById('ovCards');
+  if (cards) {
+    cards.innerHTML = m.plates.map(p => {
+      const a = plateAssignments[p.plate] || {};
+      const res = reservedOn(p.plate);
+      const dots = [];
+      ROWS.forEach(r => COLS.forEach(cn => {
+        const w = `${r}${cn}`, x = a[w];
+        if (x) {
+          const src = byTiu[x.tiu_id];
+          dots.push(isAnyControl(src) ? '#b8b2a4'
+                  : (sampleColorMap[x.tiu_id] || NO_COHORT_COLOR));
+        } else dots.push(res.has(w) ? '#e2ded4' : '#efece5');
+      }));
+      return `<button type="button" class="ov-card" data-plate="${p.plate}" aria-current="${p.plate === ovSelectedPlate}">
+        <span class="top"><span class="nm">${escHtml(p.name)}</span><span class="ct">${p.held}/96</span></span>
+        <span class="dots">${dots.map(d => `<i style="background:${d}"></i>`).join('')}</span>
+        <span class="st" style="color:${p.tone === 'ok' ? 'var(--accent)' : '#8a6a00'}">${escHtml(p.status)}</span>
+      </button>`;
+    }).join('');
+    cards.querySelectorAll('.ov-card').forEach(el =>
+      el.addEventListener('click', () => { ovSelectedPlate = +el.dataset.plate; renderOverview(); }));
+  }
+
+  const bars = document.getElementById('ovBars');
+  if (bars) bars.innerHTML = m.plates.map(p => {
+    const segs = p.segs.filter(s => s.n)
+      .map(s => `<i style="width:${(s.pct * 100).toFixed(2)}%;background:${s.colour}" title="${escHtml(s.name)}: ${s.n}"></i>`).join('');
+    const refs = m.refsPct.map(r => `<span class="ref" style="left:${r.toFixed(2)}%"></span>`).join('');
+    return `<div style="font-family:'DM Mono',monospace;font-size:11px;color:#3d3a33;">${escHtml(p.name)}</div>
+      <div class="ov-bar">${segs}${refs}</div>
+      <div style="font-family:'DM Mono',monospace;font-size:10.5px;color:var(--muted);text-align:right;">${p.samples}</div>`;
+  }).join('');
+
+  const lg = document.getElementById('ovLegend');
+  if (lg) lg.innerHTML = m.names.map(c =>
+    `<span><i style="background:${cohortColorMap[c] || NO_COHORT_COLOR}"></i>${escHtml(c)}</span>`).join('');
+
+  renderOverviewDetail(m);
+}
+
+function renderOverviewDetail(m) {
+  const p = m.plates.find(x => x.plate === ovSelectedPlate) || m.plates[0];
+  if (!p) return;
+  const nm = document.getElementById('ovSelName');
+  if (nm) nm.textContent = p.name;
+
+  const mini = document.getElementById('ovMini');
+  if (mini) {
+    const a = plateAssignments[p.plate] || {};
+    const res = reservedOn(p.plate);
+    const cells = ['<span class="h"></span>']
+      .concat(COLS.map(c => `<span class="h">${c}</span>`));
+    ROWS.forEach(r => {
+      cells.push(`<span class="h">${r}</span>`);
+      COLS.forEach(c => {
+        const w = `${r}${c}`, x = a[w];
+        if (x) {
+          const src = byTiu[x.tiu_id];
+          const col = isAnyControl(src) ? '#8a6a00' : (sampleColorMap[x.tiu_id] || NO_COHORT_COLOR);
+          cells.push(`<i style="border-color:${col};background:${hexToRgba(col, 0.2)}" title="${escHtml(w + ' ' + x.input_id)}"></i>`);
+        } else if (res.has(w)) {
+          cells.push(`<i style="border-color:var(--border);background:var(--surface2);border-style:dashed"></i>`);
+        } else {
+          cells.push(`<i style="border-color:var(--border);background:var(--empty)"></i>`);
+        }
+      });
+    });
+    mini.innerHTML = cells.join('');
+  }
+
+  const edge = edgeExposure(null, 'cohort', [p.plate]);
+  const worst = (edge.rows || []).slice().sort((x, y) => Math.abs(y.dev) - Math.abs(x.dev))[0];
+  const libs = enumerateLibraries().filter(l => l.plate === p.plate);
+  const indexed = libs.filter(l => indexAssignments[l.uid]).length;
+  const last = changeLog.length ? changeLog[changeLog.length - 1] : null;
+
+  const facts = [
+    ['Sample wells', `${p.samples} / ${p.samples + p.freeSample}`, ''],
+    ['Controls', String(p.controls), ''],
+    ['Bridges', `${p.bridges} (minimum ${minBridgesRequired()})`,
+      p.bridges < minBridgesRequired() ? '#8a6a00' : ''],
+    ['Control area', describeReserved(p.plate) + (plateReserved[p.plate] ? ' · custom' : ' · default'), ''],
+    ['Worst cohort edge share', worst
+      ? `${worst.group} ${(worst.dev * 100 >= 0 ? '+' : '')}${(worst.dev * 100).toFixed(1)} pp`
+      : 'n/a', worst && Math.abs(worst.dev) > edgeMargin() ? '#8a6a00' : ''],
+    ['Indexes', libs.length ? `${indexed} / ${libs.length} wells` : 'no libraries',
+      libs.length && indexed < libs.length ? '#8a6a00' : ''],
+    ['Last edit', last ? `${last.user || '—'} · ${String(last.ts || '').slice(11, 16)}` : 'no edits', '']
+  ];
+  const box = document.getElementById('ovFacts');
+  if (box) box.innerHTML = facts.map(([k, v, ink]) =>
+    `<div><span>${escHtml(k)}</span><span${ink ? ` style="color:${ink}"` : ''}>${escHtml(v)}</span></div>`).join('');
+}
+
+function openSelectedInEditor() {
+  currentPlate = Math.min(Math.max(1, ovSelectedPlate), totalPlates);
+  switchView('editor');
+  clearSelection();
+  renderPlate();
+}
+
+// ─── Autofill dialog: pickers, live preview, stat tiles (mockup 1d) ─────────
+let afPreviewPlate = null;   // which plate of the plan the preview is showing
+
+const REP_LAYOUTS = [
+  { v: 'pair-down',   nm: 'Side-by-side, fill down',   cells: [1, 1, 0, 0, 2, 2, 0, 0] },
+  { v: 'pair-across', nm: 'Side-by-side, fill across', cells: [1, 1, 2, 2, 0, 0, 0, 0] },
+  { v: 'stack-down',  nm: 'Stacked, fill down',        cells: [1, 0, 0, 0, 1, 0, 0, 0] }
+];
+
+function buildReplicatePickers() {
+  const lay = document.getElementById('repLayoutPicker');
+  if (lay && !lay.childElementCount) {
+    const on = '#2d5a3d', on2 = '#8fb59b', off = '#e2ded4';
+    lay.innerHTML = REP_LAYOUTS.map(o =>
+      `<button type="button" class="rep-opt" role="radio" data-v="${o.v}" aria-checked="false">
+         <span class="cells">${o.cells.map(c =>
+           `<i style="background:${c === 1 ? on : c === 2 ? on2 : off}"></i>`).join('')}</span>
+         <span class="nm">${escHtml(o.nm)}</span>
+       </button>`).join('');
+    lay.querySelectorAll('.rep-opt').forEach(b => b.addEventListener('click', () => {
+      const sel = document.getElementById('replicateLayout');
+      if (sel) { sel.value = b.dataset.v; }
+      syncReplicatePickers();
+      autofillOptionChanged();
+    }));
+  }
+  const cnt = document.getElementById('repCountPicker');
+  if (cnt && !cnt.childElementCount) {
+    cnt.innerHTML = [['2', 'Duplicate'], ['1', 'Singlet']].map(([v, nm]) =>
+      `<button type="button" role="radio" data-v="${v}" aria-checked="false">${nm}
+         <span data-per></span></button>`).join('');
+    cnt.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      const sel = document.getElementById('replicateCount');
+      if (sel) sel.value = b.dataset.v;
+      syncReplicatePickers();
+      autofillOptionChanged();
+    }));
+  }
+  syncReplicatePickers();
+}
+
+// The pickers and the selects are one value with two faces; this keeps the
+// faces honest whichever one was touched.
+function syncReplicatePickers() {
+  const layv = (document.getElementById('replicateLayout') || {}).value;
+  document.querySelectorAll('#repLayoutPicker .rep-opt').forEach(b =>
+    b.setAttribute('aria-checked', String(b.dataset.v === layv)));
+  const cntv = (document.getElementById('replicateCount') || {}).value;
+  const perPlate = sampleWellsPerPlate();
+  document.querySelectorAll('#repCountPicker button').forEach(b => {
+    b.setAttribute('aria-checked', String(b.dataset.v === cntv));
+    const n = parseInt(b.dataset.v, 10) || 1;
+    const per = b.querySelector('[data-per]');
+    if (per) per.textContent = ` · ${Math.floor(perPlate / n)}/plate`;
+  });
+  // Stacking two wells in a column needs an even number of rows to pair off,
+  // and says nothing when there is only one well per sample.
+  const stack = document.querySelector('#repLayoutPicker .rep-opt[data-v="stack-down"]');
+  if (stack) stack.style.opacity = (cntv === '1') ? '0.45' : '1';
+}
+
+// Wells a plate can give to samples once the control area is paid for.
+function sampleWellsPerPlate() {
+  const res = reservedOn(currentPlate);
+  return Math.max(1, 96 - res.size);
+}
+
+function rerollSeed() {
+  const el = document.getElementById('ditherSeed');
+  if (!el) return;
+  el.value = String(Math.floor(Math.random() * 90000000) + 10000000);
+  autofillOptionChanged();
+}
+
+function afPreviewStep(d) {
+  if (!lastPlanMeta || !lastPlanMeta.platesUsed || !lastPlanMeta.platesUsed.length) return;
+  const list = lastPlanMeta.platesUsed;
+  let i = list.indexOf(afPreviewPlate);
+  if (i < 0) i = 0;
+  i = Math.min(list.length - 1, Math.max(0, i + d));
+  afPreviewPlate = list[i];
+  renderAutofillPreviewGrid();
+}
+
+// The plan's plate, drawn. What the plan would put down is merged over what is
+// already on the plate, because that is what Apply actually leaves behind.
+function renderAutofillPreviewGrid() {
+  const grid = document.getElementById('afPreviewGrid');
+  const label = document.getElementById('afPreviewLabel');
+  const prev = document.getElementById('afPrevBtn'), next = document.getElementById('afNextBtn');
+  if (!grid) return;
+
+  const meta = lastPlanMeta;
+  const list = (meta && meta.platesUsed) || [];
+  if (!autofillPlan || !list.length) {
+    grid.innerHTML = '<div style="grid-column:1/-1;padding:18px;text-align:center;font-size:12px;color:var(--muted)">' +
+      'No plan yet — adjust a setting or press Preview.</div>';
+    if (label) label.textContent = 'no plan yet';
+    if (prev) prev.disabled = true;
+    if (next) next.disabled = true;
+    return;
+  }
+  if (list.indexOf(afPreviewPlate) < 0) afPreviewPlate = list[0];
+  const p = afPreviewPlate;
+  const i = list.indexOf(p);
+  if (label) label.textContent = `Plate ${p} of ${totalPlates}`;
+  if (prev) prev.disabled = i <= 0;
+  if (next) next.disabled = i >= list.length - 1;
+
+  const planned = autofillPlan[p] || {};
+  const existing = plateAssignments[p] || {};
+  const res = reservedOn(p);
+  const cells = ['<span class="h"></span>'].concat(COLS.map(c => `<span class="h">${c}</span>`));
+  ROWS.forEach(r => {
+    cells.push(`<span class="h">${r}</span>`);
+    COLS.forEach(c => {
+      const w = `${r}${c}`;
+      const a = planned[w] || existing[w];
+      if (a) {
+        const src = byTiu[a.tiu_id];
+        const col = isAnyControl(src) ? '#8a6a00' : (sampleColorMap[a.tiu_id] || NO_COHORT_COLOR);
+        const isNew = !!planned[w];
+        cells.push(`<i title="${escHtml(w + ' ' + a.input_id + (isNew ? ' (new)' : ' (already placed)'))}" style="border-color:${col};background:${
+          hexToRgba(col, isNew ? 0.28 : 0.1)};${isNew ? '' : 'border-style:dotted;'}"></i>`);
+      } else if (res.has(w)) {
+        cells.push('<i style="border-color:var(--border);background:var(--surface2);border-style:dashed"></i>');
+      } else {
+        cells.push('<i style="border-color:var(--border);background:var(--empty)"></i>');
+      }
+    });
+  });
+  grid.innerHTML = cells.join('');
+  renderAutofillStats();
+}
+
+// Four numbers worth deciding on: how big the run is, and the two ways it can
+// be wrong (cohort drift across plates, and samples that cannot fill the wells).
+function renderAutofillStats() {
+  const box = document.getElementById('afStats');
+  const warnBox = document.getElementById('afVolWarn');
+  if (!box) return;
+  const meta = lastPlanMeta;
+  if (!meta || !autofillPlan) { box.innerHTML = ''; if (warnBox) warnBox.innerHTML = ''; return; }
+
+  const merged = {};
+  for (let p = 1; p <= totalPlates; p++) {
+    merged[p] = Object.assign({}, plateAssignments[p] || {}, autofillPlan[p] || {});
+  }
+  const opts = readAutofillOptions();
+  const diag = balanceDiagnostics(merged).find(d => d.key === opts.groupField);
+  const drift = diag ? Math.abs(diag.maxDev) * 100 : null;
+  const vol = volumeCheckEnabled() ? runVolumeCheck(opts.replicates) : { short: [], thawed: [] };
+
+  const tiles = [
+    { v: String(meta.platesUsed.length), l: 'plates', ink: 'var(--text)' },
+    { v: String(meta.sampleCount), l: 'samples', ink: 'var(--text)' },
+    { v: drift === null ? '—' : `±${drift.toFixed(1)}`,
+      l: `max ${escHtml(groupLabelOf(opts.groupField))} drift, pp`,
+      ink: drift !== null && drift > edgeMargin() * 100 ? '#8a6a00' : 'var(--accent)' },
+    { v: String(vol.short.length), l: 'volume flags', ink: vol.short.length ? '#8a6a00' : 'var(--accent)' }
+  ];
+  box.innerHTML = tiles.map(t =>
+    `<div class="af-stat"><div class="v" style="color:${t.ink}">${escHtml(t.v)}</div><div class="l">${t.l}</div></div>`).join('');
+
+  if (warnBox) {
+    warnBox.innerHTML = vol.short.length
+      ? `<div class="af-warn"><strong>${vol.short.length} sample(s) below minimum volume.</strong>
+           Choose per sample: proceed, reduce to singlet, or exclude.
+           <button type="button" class="btn btn-ghost" style="padding:2px 9px;font-size:11px;margin-left:6px;"
+                   onclick="openVolumeDialog(${opts.replicates})">Review</button></div>`
+      : '';
+  }
+
+  const note = document.getElementById('afFootNote');
+  if (note) note.textContent =
+    `Replaces sample wells on plate${meta.platesUsed.length > 1 ? 's' : ''} ${
+      meta.platesUsed.join(', ')}. Seed and settings are written to the Design Log.`;
+  const apply = document.getElementById('applyAutofillBtn');
+  if (apply && !apply.disabled) apply.textContent = `Apply to ${meta.platesUsed.length} plate(s)`;
+}
+
+function groupLabelOf(field) {
+  const f = GROUP_FIELDS.find(x => x.value === field);
+  return (f && f.label) ? f.label.toLowerCase() : String(field || 'group');
+}
+
 function updateStats() {
+  scheduleValidateBadge();
   let total = 0;
   for (const p of Object.values(plateAssignments)) total += Object.keys(p).length;
   document.getElementById('totalAssigned').textContent = total;
@@ -4725,7 +6078,8 @@ function updateUndoButton() {
   if (!btn) return;
   const next = undoStack[undoStack.length - 1];
   btn.disabled = !next;
-  btn.textContent = next ? `↶ Undo ${next.label}` : '↶ Undo';
+  btn.textContent = '↶ Undo';        // the action is in the tooltip; a
+                                     // growing label reflows the toolbar
   btn.title = next ? `Undo: ${next.label}` : 'Nothing to undo';
 }
 
@@ -6310,6 +7664,19 @@ function validateLayout() {
   if (mixedPairs.length)
     add(errors, 'Replicate pairs holding two different samples', mixedPairs,
       'These would be exported as technical duplicates of each other.');
+
+  // Bridge coverage. Export already refuses to go quietly on a plate with no
+  // anchor, but the validator said nothing — so "Validate" could report a clean
+  // run that "Export" then blocked, and the toolbar badge would agree with the
+  // wrong one of the two. Same rule, same place, one answer.
+  const bcov = bridgeCoverage();
+  if (bcov.minimum > 0 && bcov.short.length) {
+    add(warnings, `Plate(s) carrying fewer than ${bcov.minimum} bridging sample(s)`,
+      bcov.short.map(p => `P${p}: ${(bcov.perPlate[p] || []).length} of ${bcov.minimum}`),
+      'A plate with no sample in common with any other cannot be batch-corrected ' +
+      'against the rest of the run. Mark a sample repeat_across_plates, bridge one ' +
+      'by hand, or set the minimum to 0 under Autofill → Constraints.');
+  }
 
   // Subject integrity, and bridges that drifted
   if (opts.keepSubjectTogether) {
