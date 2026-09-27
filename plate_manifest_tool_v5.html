@@ -1561,7 +1561,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   <header class="app-head">
     <div style="display:flex;flex-direction:column;gap:1px;">
       <h1>PhIPSeq Plate Designer</h1>
-      <p class="sub">96-well manifest tool · <span id="versionBadge">v4.3</span></p>
+      <p class="sub">96-well manifest tool · <span id="versionBadge">v5</span></p>
     </div>
 
     <!-- The four numbers that answer "what am I looking at". Ids are unchanged
@@ -2323,11 +2323,14 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
 // ─── Version ─────────────────────────────────────────────────────────────────
 // Surfaced in the UI badge and written to the Design Log so a reader can tell
 // which build produced a layout. Bump on any release that changes behaviour.
-const DESIGNER_VERSION = '4.3.0';
+const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'a1a4f97+local changes';
+const DESIGNER_BUILD = 'e411f35';
+// Deliberately unchanged at the 5.0 release: the designer's interface was
+// rebuilt, but the shape of a saved design was not, so a v5 state file still
+// opens in v4 and vice versa. Bump this only when the saved shape changes.
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
