@@ -107,7 +107,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   /* Main layout */
   .main-layout {
     display: grid;
-    grid-template-columns: 240px 1fr 240px;
+    grid-template-columns: 250px 1fr 270px;
     gap: 20px;
     align-items: start;
   }
@@ -1341,6 +1341,137 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     .af-preview { max-height: none; }
   }
 
+  /* ─── Landing: one field, and a reason for it ──────────────────────────────
+     Before a manifest exists there is exactly one thing to fill in. In the
+     corner, unlabelled, it read as decoration. */
+  #landing { max-width: 720px; margin: 0 auto; }
+  #userGroup.on-landing {
+    max-width: 720px; margin: -8px auto 0; padding: 18px 22px 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 7px; text-align: center;
+  }
+  #userGroup.on-landing label {
+    font-size: 13px; font-weight: 600; color: var(--text);
+  }
+  #userGroup.on-landing input {
+    width: 230px; text-align: center;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text); font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+    font-size: 14px; padding: 9px 12px; outline: none;
+  }
+  #userGroup.on-landing input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(45,90,61,0.14); }
+  #userGroup.on-landing .why { font-size: 12px; color: var(--muted); max-width: 420px; line-height: 1.5; }
+
+  /* In the header the same field is compact, but still labelled. */
+  #userGroup.in-header { display: flex; align-items: center; gap: 7px; }
+  #userGroup.in-header label { font-size: 12px; color: var(--muted); white-space: nowrap; }
+  #userGroup.in-header input {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text); font-family: 'DM Mono', ui-monospace, Menlo, monospace;
+    font-size: 12px; padding: 6px 10px; width: 92px; outline: none;
+  }
+  #userGroup.in-header .why { display: none; }
+  #userGroup.in-header input:placeholder-shown { border-color: #e0c46a; background: #fef9ec; }
+
+  /* ─── Right rail: summary above detail, and nothing tall while idle ────────
+     The assignments list grows to 96 rows, so anything under it leaves the
+     screen. Cohort progress now sits above it, and the inspector shrinks to a
+     single line until there is actually a selection. */
+  .insp-idle { font-size: 12.5px; color: var(--muted); line-height: 1.5; }
+  .inspector.has-sel .insp-idle { display: none; }
+  .inspector:not(.has-sel) .when-sel { display: none; }
+  .when-sel.contents { display: contents; }
+  .kbd-hint {
+    font-size: 11.5px; color: var(--muted);
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  }
+  .kbd-hint .kbd + .kbd { margin-left: 6px; }
+
+  /* The rail scrolls with its own overflow rather than pushing the page down,
+     so the plate and the rail are both always on screen. */
+  @media (min-height: 700px) {
+    .main-layout > div:last-child {
+      position: sticky; top: 12px;
+      max-height: calc(100vh - 24px); overflow-y: auto;
+      scrollbar-width: thin;
+    }
+  }
+  .assignment-list { max-height: min(420px, 32vh); }
+  .sample-list { max-height: min(520px, 46vh); }
+
+  /* ─── Legibility floor ────────────────────────────────────────────────────
+     Sizes below ~11px are fine on a design canvas and not on a bench laptop.
+     This raises the floor everywhere the text is prose or a label; the only
+     things left smaller are the glyphs inside a 44px well. */
+  .file-chip { font-size: 12px; }
+  .toolbar { font-size: 13px; }
+  .toolbar .btn, .seg button, .view-tabs button { font-size: 12.5px; }
+  .stepper .lbl, .stepper button { font-size: 13px; }
+  .af-eyebrow, .inspector .eyebrow { font-size: 11.5px; }
+  .dither-field .hint, .af-sec .hint, .af-sec label, .af-sec .dither-field .hint { font-size: 11.5px; }
+  .af-sec .toggle-wrap { font-size: 12.5px; }
+  .af-stat .l { font-size: 11.5px; }
+  .af-stat .v { font-size: 17px; }
+  .match-row .id { font-size: 12.5px; }
+  .match-row .meta { font-size: 11.5px; }
+  .match-row .hint { font-size: 11px; }
+  .legend, .legend-item { font-size: 12px; }
+  .plate-head .pd, .plate-head .pn { font-size: 12.5px; }
+  .plate-tab .n { font-size: 12px; }
+  .ov-kpi .l { font-size: 12px; }
+  .ov-kpi .v { font-size: 22px; }
+  .ov-card .nm { font-size: 13px; }
+  .ov-card .ct, .ov-card .st { font-size: 11.5px; }
+  .ov-facts div { font-size: 12.5px; }
+  .ov-legend, .ov-bars { font-size: 12px; }
+  .plate-grid .col-header, .plate-grid .row-header { font-size: 14px; }
+  .cohort-progress { font-size: 12.5px; }
+  .panel-header { font-size: 12.5px; }
+
+  /* Wells are the one place a small size is structural rather than a choice —
+     twelve of them have to fit across the plate. They get the extra size the
+     layout can actually give them, and the hover punch-out carries the rest. */
+  .plate-grid.detail .well-label { font-size: 10.5px; }
+  .plate-grid.detail .well-sub { font-size: 9.5px; }
+
+  /* ─── Collapsing the sample list ──────────────────────────────────────────
+     Reading a labelled plate wants width more than it wants the picking list. */
+  .main-layout.no-left { grid-template-columns: 0 1fr 270px; }
+  .main-layout.no-left > div:first-child { display: none; }
+
+  /* Plate tabs now live inside the toolbar rather than on a row of their own. */
+  .toolbar .plate-tabs {
+    padding: 0; border: 0; background: transparent;
+    flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; flex: 0 1 auto;
+  }
+  .toolbar .plate-tabs::-webkit-scrollbar { display: none; }
+  .tb-arrow {
+    border: 1px solid var(--border); background: var(--surface); border-radius: 6px;
+    cursor: pointer; color: var(--muted); font-size: 12px; padding: 7px 9px; font-family: inherit;
+  }
+  .tb-arrow:hover:not(:disabled) { color: var(--accent); border-color: var(--accent); }
+  .tb-arrow:disabled { opacity: 0.35; cursor: default; }
+  .toolbar-2 { padding-top: 8px; padding-bottom: 8px; }
+
+  /* The control area as a chip that opens in place, not a permanent row. */
+  .area-chip {
+    cursor: pointer; list-style: none; font-size: 12px; color: #3d3a33;
+    padding: 6px 11px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface);
+    white-space: nowrap;
+  }
+  .area-chip::-webkit-details-marker { display: none; }
+  .area-chip:hover { border-color: var(--accent); }
+  #areaRow[open] .area-chip { border-color: var(--accent); background: var(--accent-light); }
+  .area-pop {
+    position: absolute; right: 0; top: calc(100% + 6px); z-index: 350; min-width: 330px;
+    padding: 12px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 12px 30px rgba(0,0,0,0.18);
+    display: flex; flex-direction: column; gap: 9px;
+  }
+
+  /* The header must fit one line at laptop width. */
+  .app-head h1, .app-head .sub { white-space: nowrap; }
+  .app-head .sub { font-size: 11.5px; }
 </style>
 </head>
 <body>
@@ -1349,7 +1480,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   <header class="app-head">
     <div style="display:flex;flex-direction:column;gap:1px;">
       <h1>PhIPSeq Plate Designer</h1>
-      <p class="sub">96-well sample manifest tool · <span id="versionBadge">v4.3</span></p>
+      <p class="sub">96-well manifest tool · <span id="versionBadge">v4.3</span></p>
     </div>
 
     <!-- The four numbers that answer "what am I looking at". Ids are unchanged
@@ -1369,13 +1500,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     </div>
 
     <div style="margin-left:auto;display:flex;align-items:center;gap:10px;">
-      <div style="display:flex;align-items:center;gap:6px;font-size:11px;">
-        <label for="templateUser" class="sr-only">Template user</label>
-        <input id="templateUser" type="text" placeholder="Template user"
-               oninput="rememberUser()" title="Recorded against every edit and written to the Design Log"
-               style="background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);
-                      font-family:'DM Mono',monospace;font-size:11px;padding:5px 10px;width:104px;outline:none;">
-      </div>
+      <div id="userSlotHeader"></div>
       <button class="btn btn-ghost hidden" id="newManifestBtn" onclick="resetDesigner()"
               style="padding:7px 12px;font-size:12px;"
               title="Clear this design and load a different manifest">↺ New manifest</button>
@@ -1409,12 +1534,25 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
             onclick="discardSavedSession()">Discard</button>
   </div>
 
-  <!-- Upload -->
-  <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
-    <div class="icon">📂</div>
-    <h3>Upload Manifest Excel File</h3>
-    <p>Drop your .xlsx file here or click to browse — use the PhIPSeq Manifest Template</p>
-    <input type="file" id="fileInput" accept=".xlsx,.xls" onchange="handleFile(event)">
+  <!-- Landing. The upload zone is the whole card's click target, so the name
+       field sits outside it — inside, every click would open the file dialog. -->
+  <div id="landing">
+    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+      <div class="icon">📂</div>
+      <h3>Upload Manifest Excel File</h3>
+      <p>Drop your .xlsx file here or click to browse — use the PhIPSeq Manifest Template</p>
+      <input type="file" id="fileInput" accept=".xlsx,.xls" onchange="handleFile(event)">
+    </div>
+    <div id="userSlotLanding"></div>
+  </div>
+
+  <!-- Moved between the landing card and the header by placeUserField(). One
+       element, so there is only ever one value and one id. -->
+  <div id="userGroup">
+    <label for="templateUser">Template user</label>
+    <input id="templateUser" type="text" placeholder="name or initials" oninput="rememberUser()">
+    <p class="why">Recorded against every edit and written to the Design Log, so a
+      finished run says who laid it out.</p>
   </div>
 
   <!-- Main UI (hidden until file loaded) -->
@@ -1422,30 +1560,18 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
     <!-- One toolbar for the whole app (mockup 1a): what plate, what is
          selected, the three dialogs, and the three things you do to a plate.
          It sits above the columns because none of it belongs to just one. -->
+    <!-- Row 1: which plate, and the three things you do to one. The tabs and
+         the old "Plate 1 of 8" stepper were the same control twice; the label
+         stays for screen readers, which have no tabs to look at. -->
     <div class="toolbar hidden" id="mainToolbar">
-      <div class="stepper">
-        <button type="button" onclick="changePlate(-1)" id="platePrev" aria-label="Previous plate">◀</button>
-        <div class="lbl" id="plateLabel">Plate 1 <span>of 1</span></div>
-        <button type="button" onclick="changePlate(1)" id="plateNext" aria-label="Next plate">▶</button>
-      </div>
+      <button type="button" class="tb-arrow" onclick="changePlate(-1)" id="platePrev" aria-label="Previous plate">◀</button>
+      <div class="plate-tabs" id="plateTabs" role="tablist" aria-label="Plates"></div>
+      <button type="button" class="tb-arrow" onclick="changePlate(1)" id="plateNext" aria-label="Next plate">▶</button>
+      <div class="lbl sr-only" id="plateLabel" aria-live="polite">Plate 1 <span>of 1</span></div>
       <button class="btn btn-ghost" onclick="addPlates(1)" style="padding:6px 10px;"
               title="Add a plate to the run" aria-label="Add a plate">＋</button>
       <button class="btn btn-ghost" onclick="removeCurrentPlate()" id="removePlateBtn" style="padding:6px 10px;"
               title="Remove this plate — only possible while it is empty" aria-label="Remove this plate">－</button>
-
-      <div class="vr"></div>
-      <span style="color:var(--muted);">Select</span>
-      <div class="seg">
-        <button type="button" onclick="selectAll()">All</button>
-        <button type="button" onclick="clearSelection()">None</button>
-        <button type="button" onclick="selectEmpty()">Empty</button>
-      </div>
-
-      <div class="vr"></div>
-      <button class="btn btn-ghost" style="font-size:12px;" onclick="openControlModal()">🧪 Control template</button>
-      <button class="btn btn-ghost" style="font-size:12px;" onclick="openIndexModal()">🧬 Index assignment</button>
-      <button class="btn btn-ghost" style="font-size:12px;border-color:var(--accent);background:var(--accent-light);color:var(--accent);font-weight:600;"
-              onclick="openAutofillModal()">⚡ Autofill plates</button>
 
       <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
         <button class="btn btn-ghost" id="undoBtn" onclick="undo()" disabled title="Nothing to undo">↶ Undo</button>
@@ -1457,30 +1583,44 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       </div>
     </div>
 
-    <div class="plate-tabs hidden" id="plateTabs" role="tablist" aria-label="Plates"></div>
-
-    <!-- The control area has no 1a equivalent — 1a only states it in the plate
-         header — but it still has to be settable, so it folds away instead. -->
-    <details class="hidden" id="areaRow" style="border-bottom:1px solid var(--border);background:var(--surface);">
-      <summary style="cursor:pointer;padding:8px 22px;font-size:11.5px;color:#3d3a33;list-style:none;">
-        Control area — <span id="controlAreaLabel" class="area-label"></span>
-        <span style="color:var(--muted);">· click to change</span>
-      </summary>
-      <div class="v3-toolbar" style="border:0;border-top:1px solid var(--border);border-radius:0;margin:0;">
-        <label class="toggle-wrap" title="Default control area for every plate that has no area of its own">
-          <input type="checkbox" id="lockControlCols" onchange="renderPlate()" checked>
-          Reserve cols 11–12 for controls (default)
-        </label>
-        <div class="divider"></div>
-        <div class="quick-select" style="margin-left:2px;">
-          <button onclick="setReservedPreset('cols1112')" title="Reserve columns 11 and 12 on this plate">Cols 11–12</button>
-          <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
-          <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
-          <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
-          <button id="unlockBtn" onclick="toggleAreaUnlock()">🔓 Unlock</button>
-        </div>
+    <!-- Row 2: selection, the dialogs, and the control area as a chip rather
+         than a row of its own. -->
+    <div class="toolbar toolbar-2 hidden" id="toolbar2">
+      <button class="btn btn-ghost" id="leftToggle" onclick="toggleLeftPanel()" aria-pressed="false"
+              style="padding:6px 10px;" title="Hide the sample list and widen the plate">◧</button>
+      <div class="vr"></div>
+      <span style="color:var(--muted);">Select</span>
+      <div class="seg">
+        <button type="button" onclick="selectAll()">All</button>
+        <button type="button" onclick="clearSelection()">None</button>
+        <button type="button" onclick="selectEmpty()">Empty</button>
       </div>
-    </details>
+      <div class="vr"></div>
+      <button class="btn btn-ghost" onclick="openControlModal()">🧪 Control template</button>
+      <button class="btn btn-ghost" onclick="openIndexModal()">🧬 Index assignment</button>
+      <button class="btn btn-ghost"
+              style="border-color:var(--accent);background:var(--accent-light);color:var(--accent);font-weight:600;"
+              onclick="openAutofillModal()">⚡ Autofill plates</button>
+
+      <details id="areaRow" style="margin-left:auto;position:relative;">
+        <summary class="area-chip">
+          Control area: <span id="controlAreaLabel" class="area-label"></span>
+        </summary>
+        <div class="area-pop">
+          <label class="toggle-wrap" title="Default control area for every plate that has no area of its own">
+            <input type="checkbox" id="lockControlCols" onchange="renderPlate()" checked>
+            Reserve cols 11–12 for controls (default)
+          </label>
+          <div class="quick-select" style="flex-wrap:wrap;">
+            <button onclick="setReservedPreset('cols1112')" title="Reserve columns 11 and 12 on this plate">Cols 11–12</button>
+            <button onclick="setReservedFromSelection()" title="Reserve the wells currently selected on this plate">From selection</button>
+            <button onclick="setReservedPreset('none')" title="Leave no control area on this plate">None</button>
+            <button onclick="clearReserved()" title="Fall back to the run-wide default">Use default</button>
+            <button id="unlockBtn" onclick="toggleAreaUnlock()">🔓 Unlock</button>
+          </div>
+        </div>
+      </details>
+    </div>
 
     <div id="viewEditor" role="tabpanel" aria-labelledby="tabEditor">
     <div class="main-layout">
@@ -1588,13 +1728,15 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         <!-- Selection inspector (mockup 1b): the selection, what goes in it,
              and the two ways to commit — all in one place. -->
         <div class="card" style="margin-bottom:14px;">
-          <div class="inspector">
-            <div class="eyebrow"><span>Selection</span><span style="text-transform:none;font-weight:400;">Esc to clear</span></div>
-            <div class="count">
+          <div class="inspector" id="inspector">
+            <div class="eyebrow"><span>Selection</span><span style="text-transform:none;font-weight:400;" class="when-sel">Esc to clear</span></div>
+            <div class="insp-idle">Drag across the plate to select wells, then assign a sample here.</div>
+            <div class="count when-sel">
               <b id="inspCount">0 wells</b>
               <span id="inspRange"></span>
             </div>
             <label class="sr-only" for="inspSearch">Find a sample to assign</label>
+            <span class="when-sel contents">
             <input type="text" id="inspSearch" placeholder="Type to find a sample…"
                    oninput="renderInspectorMatches()" onkeydown="inspectorKey(event)"
                    style="padding:8px 10px;border:1px solid var(--border);border-radius:7px;
@@ -1613,13 +1755,19 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
               <button class="btn btn-ghost" onclick="assignSelectedAllPlates()"
                       title="Put this sample in the same wells on every plate — the usual way to run one control across the whole batch">All plates</button>
             </div>
-            <div style="font-size:11px;color:var(--muted);display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+            <div class="kbd-hint">
               <span class="kbd">↵</span>this plate
-              <span class="kbd" style="margin-left:6px;">⇧↵</span>same wells on all plates
+              <span class="kbd">⇧↵</span>same wells on all plates
             </div>
+            </span>
           </div>
         </div>
 
+        <div class="panel" style="margin-bottom:14px;">
+          <div class="panel-header"><div class="dot" style="background:var(--accent)"></div> Cohort Progress</div>
+          <div class="cohort-progress" id="cohortProgress">
+            <div class="empty-state">No samples loaded</div>
+          </div>
         <div class="panel">
           <div class="panel-header"><div class="dot" style="background:var(--accent3)"></div> Current Plate Assignments</div>
           <div class="assignment-list" id="assignmentList">
@@ -1627,11 +1775,6 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           </div>
         </div>
 
-        <div class="panel" style="margin-top:14px;">
-          <div class="panel-header"><div class="dot" style="background:var(--accent)"></div> Cohort Progress</div>
-          <div class="cohort-progress" id="cohortProgress">
-            <div class="empty-state">No samples loaded</div>
-          </div>
         </div>
       </div>
     </div>
@@ -2089,7 +2232,7 @@ const DESIGNER_VERSION = '4.3.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'bf7b849+local changes';
+const DESIGNER_BUILD = '45fa811+local changes';
 const STATE_SCHEMA_VERSION = 1;
 
 // ─── State ───────────────────────────────────────────────────────────────────
@@ -2185,6 +2328,7 @@ try {
 document.addEventListener('DOMContentLoaded', () => {
   const badge = document.getElementById('versionBadge');
   if (badge) badge.textContent = 'v' + DESIGNER_VERSION;
+  placeUserField();
   // A menu that stays open after you have clicked past it reads as stuck.
   document.addEventListener('click', ev => {
     const split = document.getElementById('exportSplit');
@@ -5201,14 +5345,45 @@ function updatePlateProgress() {
 // clicks that can only fail.
 let currentView = 'editor';
 
-const CHROME_IDS = ['fileChip', 'viewTabs', 'mainToolbar', 'plateTabs', 'areaRow',
+const CHROME_IDS = ['fileChip', 'viewTabs', 'mainToolbar', 'toolbar2',
                     'newManifestBtn', 'exportSplit'];
+
+// The template-user field is one element that lives in two places: centred on
+// the landing card, where it is the only thing to fill in, and compact in the
+// header once there is a manifest to work on.
+function placeUserField() {
+  const grp = document.getElementById('userGroup');
+  if (!grp) return;
+  const onLanding = document.getElementById('mainUI').classList.contains('hidden');
+  const slot = document.getElementById(onLanding ? 'userSlotLanding' : 'userSlotHeader');
+  if (slot && grp.parentNode !== slot) slot.appendChild(grp);
+  grp.classList.toggle('on-landing', onLanding);
+  grp.classList.toggle('in-header', !onLanding);
+}
+
+// Collapse the picking list to give the plate its width back.
+let leftCollapsed = false;
+
+function toggleLeftPanel() {
+  leftCollapsed = !leftCollapsed;
+  const l = document.querySelector('.main-layout');
+  if (l) l.classList.toggle('no-left', leftCollapsed);
+  const b = document.getElementById('leftToggle');
+  if (b) {
+    b.setAttribute('aria-pressed', String(leftCollapsed));
+    b.title = leftCollapsed ? 'Show the sample list' : 'Hide the sample list and widen the plate';
+  }
+  renderPlate();
+}
 
 function showChrome(on) {
   CHROME_IDS.forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('hidden', !on);
   });
+  const lz = document.getElementById('landing');
+  if (lz) lz.classList.toggle('hidden', on);
+  placeUserField();
 }
 
 function switchView(name) {
@@ -5218,7 +5393,7 @@ function switchView(name) {
   if (ed) ed.classList.toggle('hidden', currentView !== 'editor');
   if (ov) ov.classList.toggle('hidden', currentView !== 'overview');
   // The toolbar acts on one plate, so it has nothing to do in the run view.
-  ['mainToolbar', 'plateTabs', 'areaRow'].forEach(id => {
+  ['mainToolbar', 'toolbar2'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.classList.toggle('hidden', currentView !== 'editor');
   });
@@ -5446,8 +5621,10 @@ function subLabelFor(assigned, sampleObj, plate, well) {
 function updateInspector() {
   const c = document.getElementById('inspCount');
   const r = document.getElementById('inspRange');
-  if (!c || !r) return;
+  const box = document.getElementById('inspector');
   const n = selectedWells.size;
+  if (box) box.classList.toggle('has-sel', n > 0);
+  if (!c || !r) return;
   c.textContent = n === 1 ? '1 well' : `${n} wells`;
   if (!n) { r.textContent = ''; renderInspectorMatches(); return; }
   const sorted = [...selectedWells].sort((a, b) =>
