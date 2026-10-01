@@ -106,7 +106,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
      control is never shown. Scoped by id rather than by type: as a blanket rule
      this silently hid every file input added later, including the index kit
      picker, which then looked like a dropdown with nothing in it. */
-  #fileInput, #indexFile { display: none; }
+  #fileInput, #indexFile, #ctlFile { display: none; }
 
   /* Main layout */
   .main-layout {
@@ -1553,6 +1553,13 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   }
   /* The corner sits above both, or the row letters slide under it. */
   .plate-grid > .col-header:first-child { z-index: 4; left: 0; }
+  /* The subject a locator dropdown is pointing at. A ring rather than a fill,
+     so the cohort colour underneath stays readable. */
+  .well.subject-hit {
+    box-shadow: 0 0 0 3px #7a4f9a, 0 0 0 6px rgba(122,79,154,0.25) !important;
+    z-index: 3;
+  }
+  .plate-grid.detail .well.subject-hit { box-shadow: 0 0 0 3px #7a4f9a !important; }
 </style>
 </head>
 <body>
@@ -1693,6 +1700,26 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         </div>
       </div>
 
+      <details id="panseqRow" style="position:relative;">
+        <summary class="area-chip">
+          PanSeq pools: <span id="panseqLabel" class="area-label">not specified</span>
+        </summary>
+        <div class="area-pop" style="min-width:260px;">
+          <div style="font-size:11.5px;color:var(--muted);line-height:1.45;">
+            Which of the eight library pools this run uses. Written to the Design Log
+            so a plate map can be matched to its sequencing data.
+          </div>
+          <div id="panseqBoxes" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;"></div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;"
+                    onclick="setPanSeqAll(true)">All 8</button>
+            <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;"
+                    onclick="setPanSeqAll(false)">None</button>
+            <span id="panseqCount" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
+          </div>
+        </div>
+      </details>
+
       <details id="areaRow" style="position:relative;">
         <summary class="area-chip">
           Control area: <span id="controlAreaLabel" class="area-label"></span>
@@ -1752,9 +1779,22 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
           <div class="search-box" style="border-bottom:1px solid var(--border);">
             <label class="toggle-wrap" style="font-size:11px;font-weight:400;margin-bottom:8px;"
                    title="Reveal samples already placed on a plate, so one can be marked for bridging after the fact">
-              <input type="checkbox" id="showAssigned" onchange="filterSamples()">
+              <input type="checkbox" id="showAssigned" onchange="filterSamples(); toggleSubjectFinder();">
               Show placed samples
             </label>
+            <!-- Once placed samples are visible the question becomes "where did
+                 this subject end up", which the list cannot answer: a subject's
+                 draws can sit on several plates. -->
+            <div id="subjectFinder" class="hidden" style="margin-bottom:8px;">
+              <label for="subjectJump" style="font-size:10px;color:var(--muted);">Find a subject on the plates</label>
+              <select id="subjectJump" onchange="jumpToSubject(this.value)"
+                      style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:5px;
+                             color:var(--text);font-family:'DM Sans',sans-serif;font-size:12px;
+                             padding:6px 10px;outline:none;cursor:pointer;">
+                <option value="">— pick a subject —</option>
+              </select>
+              <div id="subjectWhere" style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.45;"></div>
+            </div>
             <label class="toggle-wrap" style="font-size:11px;font-weight:400;margin-bottom:8px;"
                    title="Okabe–Ito palette plus a per-cohort glyph, so cohort is carried by shape as well as colour">
               <input type="checkbox" id="colourSafe" onchange="toggleColourSafe()">
@@ -2204,6 +2244,19 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       Pick the controls and how many wells each takes; the template is stamped into
       each plate's reserved area in this order.
     </p>
+    <!-- Controls often are not in the sample manifest: the investigator sends
+         samples, the core lab adds its own. Without them in the pool there is
+         nothing for this dialog to offer. -->
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;
+                padding:9px 11px;background:var(--surface2);border-radius:7px;">
+      <span style="font-size:12px;font-weight:600;">Controls not in the manifest?</span>
+      <button class="btn btn-ghost" style="padding:5px 12px;font-size:11.5px;"
+              onclick="document.getElementById('ctlFile').click()">📂 Import control file…</button>
+      <input type="file" id="ctlFile" accept=".xlsx,.xls" onchange="handleControlFile(event)">
+      <span id="ctlFileName" style="font-size:11px;color:var(--muted);">no control file imported</span>
+      <button class="btn btn-ghost" style="padding:5px 10px;font-size:11px;margin-left:auto;"
+              onclick="clearImportedControls()" title="Remove the controls that came from a file">Remove imported</button>
+    </div>
     <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px;">
       <div>
         <label for="ctlTemplateName" style="font-size:10px;">Template name</label>
@@ -2327,7 +2380,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'd78551a+local changes';
+const DESIGNER_BUILD = '4d71d25+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -2435,6 +2488,7 @@ document.addEventListener('DOMContentLoaded', () => {
   placeUserField();
   loadUiDensity();
   applyPanelState();
+  loadPanSeqPools();
   watchLayout();
   // A menu that stays open after you have clicked past it reads as stuck.
   document.addEventListener('click', ev => {
@@ -2823,6 +2877,52 @@ function processFile(file) {
 // cached result, and a sheet read for its values then sees an empty cell — so
 // the same rule is applied here. A file that does carry a tiu_id keeps it: the
 // sheet is the authority whenever it has an answer.
+// Where each known column sits in a header row, and which spelling the sheet
+// uses for the investigator's identifier. Shared by the manifest loader and the
+// separate control-file import, so the two can never read a sheet differently.
+const MANIFEST_COLS = [
+  'tiu_id', 'input_id', 'sample_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
+  'subject_ethnicity', 'sample_type', 'volume_ml', 'min_volume_required_ml',
+  'source_rack', 'source_position', 'collection_date',
+  'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
+  'dither_group', 'repeat_across_plates'
+];
+
+function mapManifestColumns(header) {
+  const colIdx = {};
+  MANIFEST_COLS.forEach(c => { colIdx[c] = header.indexOf(c); });
+  // sample_id from template v5, input_id up to v4; both read into one field.
+  if (colIdx['sample_id'] >= 0) colIdx['input_id'] = colIdx['sample_id'];
+  return { colIdx, idHeader: colIdx['sample_id'] >= 0 ? 'sample_id' : 'input_id' };
+}
+
+function rowToSample(row, colIdx, rowIdx) {
+  const get = col => (colIdx[col] < 0 || !row) ? '' : String(row[colIdx[col]] || '').trim();
+  const input_id = get('input_id');
+  const tiu_id = get('tiu_id') || deriveTiuId(input_id, get('subject_id'));
+  if (!tiu_id) return null;                   // a blank row, whichever is blank
+  return {
+    tiu_id, input_id,
+    subject_id: get('subject_id'),
+    subject_age_yrs: get('subject_age_yrs'),
+    subject_sex: get('subject_sex'),
+    sample_type: get('sample_type'),          // normalised by the caller
+    sample_type_detail: '', sample_type_raw: '',
+    volume_mL: get('volume_ml'),
+    collection_date: get('collection_date'),
+    cohort: get('cohort'),
+    num_freeze_thaws: get('num_freeze_thaws'),
+    diagnosis: get('diagnosis'),
+    notes: get('notes'),
+    dither_group: get('dither_group'),
+    repeat_across_plates: get('repeat_across_plates'),
+    min_volume_required_mL: get('min_volume_required_ml'),
+    source_rack: get('source_rack'),
+    source_position: get('source_position'),
+    rowIdx
+  };
+}
+
 function deriveTiuId(sampleId, subjectId) {
   const a = String(sampleId || '').trim();
   const b = String(subjectId || '').trim();
@@ -2852,28 +2952,11 @@ function loadSamples() {
   // Header-based column lookup — match by lowercase
   const header = (data[0] || []).map(h => String(h || '').trim().toLowerCase());
 
-  const colIdx = {};
-  const EXPECTED_COLS = [
-    'tiu_id', 'input_id', 'sample_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
-    'subject_ethnicity', 'sample_type', 'volume_ml', 'min_volume_required_ml',
-    'source_rack', 'source_position', 'collection_date',
-    'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
-    'dither_group',        // optional — an explicit stratification column
-    'repeat_across_plates' // optional — bridging samples run on several plates
-  ];
-  EXPECTED_COLS.forEach(col => {
-    colIdx[col] = header.indexOf(col);
-  });
-  // volume_mL might have different casing
-  if (colIdx['volume_ml'] < 0) colIdx['volume_ml'] = header.indexOf('volume_ml');
-
-  // The investigator-facing identifier is `sample_id` from template v5 onward;
-  // it was `input_id` up to v4. Both are read into the same field, so manifests
-  // already in circulation keep working and nothing downstream has to care.
-  if (colIdx['sample_id'] >= 0) colIdx['input_id'] = colIdx['sample_id'];
   // Error messages name the column the way this particular sheet spells it,
   // so the reader can find it.
-  idHeader = colIdx['sample_id'] >= 0 ? 'sample_id' : 'input_id';
+  const mapped = mapManifestColumns(header);
+  const colIdx = mapped.colIdx;
+  idHeader = mapped.idHeader;
   manifestColIdx = colIdx;
 
   // Validate required columns. tiu_id is no longer required as a column:
@@ -2924,34 +3007,8 @@ function loadSamples() {
   }
 
   for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    if (!row) continue;
-    const input_id = getVal(row, 'input_id');
-    const tiu_id = rowTiuId(row);
-    if (!tiu_id) continue;          // a blank row, whichever column is blank
-
-    samples.push({
-      tiu_id,
-      input_id,
-      subject_id: getVal(row, 'subject_id'),
-      subject_age_yrs: getVal(row, 'subject_age_yrs'),
-      subject_sex: getVal(row, 'subject_sex'),
-      sample_type: getVal(row, 'sample_type'),   // normalised just below
-      sample_type_detail: '',
-      sample_type_raw: '',
-      volume_mL: getVal(row, 'volume_ml'),
-      collection_date: getVal(row, 'collection_date'),
-      cohort: getVal(row, 'cohort'),
-      num_freeze_thaws: getVal(row, 'num_freeze_thaws'),
-      diagnosis: getVal(row, 'diagnosis'),
-      notes: getVal(row, 'notes'),
-      dither_group: getVal(row, 'dither_group'),
-      repeat_across_plates: getVal(row, 'repeat_across_plates'),
-      min_volume_required_mL: getVal(row, 'min_volume_required_ml'),
-      source_rack: getVal(row, 'source_rack'),
-      source_position: getVal(row, 'source_position'),
-      rowIdx: i
-    });
+    const smp = rowToSample(data[i], colIdx, i);
+    if (smp) samples.push(smp);
   }
 
   // Normalise sample types before anything reads them: eligibility, grouping,
@@ -3024,6 +3081,13 @@ function loadSamples() {
     banner.style.display = 'none';
   }
 
+  refreshSampleDerived();
+}
+
+// Everything downstream of `samples`: colours, the filter dropdowns, the
+// legend, the stratify options and the two sample pickers. Called when a
+// manifest loads and again when a separate control file adds to the pool.
+function refreshSampleDerived() {
   assignCohortColors();
 
   // Build cohort filter dropdown
@@ -3732,6 +3796,10 @@ function renderPlate() {
       if (locked) cls += ' locked';
       else if (isSelected) cls += ' selected';
       if (assigned) cls += isCtrlAssigned ? ' assigned control-assigned' : ' assigned';
+      if (highlightSubject && assignedSampleObj &&
+          String(assignedSampleObj.subject_id || '').trim() === highlightSubject) {
+        cls += ' subject-hit';
+      }
       div.className = cls;
       div.dataset.well = key;
       // The plate is a grid of controls, not decoration: it can be reached and
@@ -3832,6 +3900,7 @@ function renderPlate() {
   updatePlateHead();
   renderPlateTabs();
   renderLegend();
+  buildSubjectFinder();
   updateInspector();
   updateCohortProgress();
   scheduleFit();
@@ -6582,6 +6651,172 @@ function setFileNameLabel(name) {
   if (chip) chip.title = name && name !== '—' ? name : '';
 }
 
+// ─── Finding a subject on the plates ────────────────────────────────────────
+// Once placed samples are shown, the question is "where did this subject end
+// up" — and the list cannot answer it, because a subject's draws may sit on
+// several plates. Picking one jumps to the first plate it is on and lights up
+// its wells there.
+let highlightSubject = '';
+
+function subjectPlacements() {
+  const out = {};                              // subject_id -> { plate -> [well] }
+  for (let p = 1; p <= totalPlates; p++) {
+    Object.entries(plateAssignments[p] || {}).forEach(([well, a]) => {
+      const sid = String((byTiu[a.tiu_id] || {}).subject_id || '').trim();
+      if (!sid) return;
+      const bySub = out[sid] = out[sid] || {};
+      (bySub[p] = bySub[p] || []).push(well);
+    });
+  }
+  Object.values(out).forEach(bySub =>
+    Object.values(bySub).forEach(list => list.sort(compareWells)));
+  return out;
+}
+
+// Row then column number, so E9 sorts before E10.
+function compareWells(a, b) {
+  return a[0].localeCompare(b[0]) || parseInt(a.slice(1), 10) - parseInt(b.slice(1), 10);
+}
+
+function buildSubjectFinder() {
+  const sel = document.getElementById('subjectJump');
+  if (!sel) return;
+  const placed = subjectPlacements();
+  const ids = Object.keys(placed).sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">— pick a subject —</option>' + ids.map(sid => {
+    const plates = Object.keys(placed[sid]).map(Number).sort((a, b) => a - b);
+    const wells = plates.reduce((n, p) => n + placed[sid][p].length, 0);
+    return `<option value="${escHtml(sid)}">${escHtml(sid)} — ${wells} well(s) on ` +
+           `plate${plates.length > 1 ? 's' : ''} ${plates.join(', ')}</option>`;
+  }).join('');
+  if (ids.includes(keep)) sel.value = keep;
+  else if (keep) { highlightSubject = ''; describeSubject(''); }
+}
+
+function toggleSubjectFinder() {
+  const box = document.getElementById('subjectFinder');
+  const on = !!(document.getElementById('showAssigned') || {}).checked;
+  if (box) box.classList.toggle('hidden', !on);
+  if (!on && highlightSubject) {              // stop lighting wells nobody can see the control for
+    highlightSubject = '';
+    describeSubject('');
+    renderPlate();
+  } else if (on) {
+    buildSubjectFinder();
+  }
+}
+
+function jumpToSubject(sid) {
+  highlightSubject = String(sid || '');
+  describeSubject(highlightSubject);
+  if (!highlightSubject) { renderPlate(); return; }
+  const placed = subjectPlacements()[highlightSubject];
+  if (!placed) { renderPlate(); return; }
+  const first = Object.keys(placed).map(Number).sort((a, b) => a - b)[0];
+  if (first && first !== currentPlate) {
+    currentPlate = first;
+    clearSelection();
+  }
+  renderPlate();
+}
+
+function describeSubject(sid) {
+  const box = document.getElementById('subjectWhere');
+  if (!box) return;
+  if (!sid) { box.textContent = ''; return; }
+  const placed = subjectPlacements()[sid];
+  if (!placed) { box.textContent = 'Not on any plate.'; return; }
+  const plates = Object.keys(placed).map(Number).sort((a, b) => a - b);
+  box.innerHTML = plates.map(p =>
+    `<div><strong>Plate ${p}</strong> · ${escHtml(placed[p].join(', '))}</div>`).join('') +
+    (plates.length > 1
+      ? `<div style="color:#8a6a00;margin-top:3px;">On ${plates.length} plates — a batch effect can land inside this subject.</div>`
+      : '');
+}
+
+// ─── PanSeq library pools ───────────────────────────────────────────────────
+// A PanSeq run uses some subset of the eight library pools. It does not change
+// how wells are laid out, but it is part of what the run *was*, so it belongs
+// in the exported record beside the seed and the version — a plate map that
+// does not say which modules were run cannot be matched to its sequencing data.
+const PANSEQ_POOL_COUNT = 8;
+let panSeqPools = [];                         // sorted pool numbers, 1..8
+
+function setPanSeqPools(list) {
+  panSeqPools = [...new Set((list || []).map(Number))]
+    .filter(n => Number.isInteger(n) && n >= 1 && n <= PANSEQ_POOL_COUNT)
+    .sort((a, b) => a - b);
+  return panSeqPools;
+}
+
+function panSeqLabel() {
+  if (!panSeqPools.length) return 'not specified';
+  if (panSeqPools.length === PANSEQ_POOL_COUNT) return `all ${PANSEQ_POOL_COUNT}`;
+  return panSeqPools.join(', ');
+}
+
+function buildPanSeqPicker() {
+  const box = document.getElementById('panseqBoxes');
+  if (!box || box.childElementCount) return;
+  box.innerHTML = Array.from({ length: PANSEQ_POOL_COUNT }, (_, i) => i + 1).map(n =>
+    `<label class="toggle-wrap" style="margin:0;font-size:12px;">
+       <input type="checkbox" data-pool="${n}" onchange="onPanSeqChange()"> Pool ${n}
+     </label>`).join('');
+  syncPanSeqPicker();
+}
+
+function syncPanSeqPicker() {
+  document.querySelectorAll('#panseqBoxes input[data-pool]').forEach(el => {
+    el.checked = panSeqPools.includes(Number(el.dataset.pool));
+  });
+  const lab = document.getElementById('panseqLabel');
+  if (lab) lab.textContent = panSeqLabel();
+  const count = document.getElementById('panseqCount');
+  if (count) count.textContent = panSeqPools.length
+    ? `${panSeqPools.length} of ${PANSEQ_POOL_COUNT} pool(s)` : 'none chosen';
+}
+
+function onPanSeqChange() {
+  setPanSeqPools([...document.querySelectorAll('#panseqBoxes input[data-pool]')]
+    .filter(el => el.checked).map(el => Number(el.dataset.pool)));
+  syncPanSeqPicker();
+  savePanSeqPools();
+  mutate('panseq_pools', { plate: '(run)', well: '(modules)', note: panSeqLabel() });
+}
+
+function setPanSeqAll(on) {
+  setPanSeqPools(on ? Array.from({ length: PANSEQ_POOL_COUNT }, (_, i) => i + 1) : []);
+  syncPanSeqPicker();
+  savePanSeqPools();
+  mutate('panseq_pools', { plate: '(run)', well: '(modules)', note: panSeqLabel() });
+}
+
+// Remembered per browser: a lab runs the same modules for months at a time.
+function savePanSeqPools() {
+  try { localStorage.setItem('phipseq_panseq_pools', JSON.stringify(panSeqPools)); }
+  catch (e) { /* private window — the choice still applies to this session */ }
+}
+
+function loadPanSeqPools() {
+  try {
+    const v = JSON.parse(localStorage.getItem('phipseq_panseq_pools') || '[]');
+    if (Array.isArray(v)) setPanSeqPools(v);
+  } catch (e) { /* ignore */ }
+  buildPanSeqPicker();
+  syncPanSeqPicker();
+}
+
+// Rows for the Design Log, in both the planned and the control-only branch.
+function panSeqRows() {
+  return [
+    [],
+    ['PanSeq library pools'],
+    ['Pools used in this run', panSeqLabel()],
+    ['Pool count', panSeqPools.length || '(not specified)']
+  ];
+}
+
 function updateStats() {
   scheduleValidateBadge();
   let total = 0;
@@ -7690,6 +7925,132 @@ function planControlTemplate(plateNum, template, rotate, seed) {
   return { ok: true, entries: perEntry, offset, chunks: chunks.length, need };
 }
 
+// ─── Controls from a separate file ──────────────────────────────────────────
+// Controls are often not in the sample manifest: the investigator sends
+// samples, the core lab adds its own mAbs and bead-only wells. Without them in
+// the pool the control template has nothing to offer, so they are imported
+// from a second workbook of the same shape and merged into `samples`.
+//
+// Imported rows are tagged so the export can write them back into Input
+// Samples — otherwise the plate maps would name identifiers the manifest does
+// not contain, and the file would not re-open.
+let importedControls = [];     // samples added from a control file
+let controlFileName = '';
+
+function handleControlFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const label = document.getElementById('ctlFileName');
+  if (label) label.textContent = 'reading ' + file.name + '…';
+  const reader = new FileReader();
+  reader.onload = ev => {
+    let wb;
+    try {
+      wb = XLSX.read(ev.target.result, { type: 'array' });
+    } catch (err) {
+      if (label) label.textContent = 'could not read ' + file.name;
+      alert('That file could not be read as a workbook (' + err.message + ').');
+      return;
+    }
+    const res = importControlWorkbook(wb, file.name);
+    if (label) label.textContent = res.error ? 'not imported' : `${file.name} — ${res.added} control(s)`;
+    if (res.error) { alert(res.error); return; }
+    e.target.value = '';                     // allow re-importing the same file
+    let msg = `Added ${res.added} control(s) from ${file.name}.`;
+    if (res.skippedDuplicate.length)
+      msg += `\n\nAlready present, left alone: ${res.skippedDuplicate.slice(0, 8).join(', ')}` +
+             (res.skippedDuplicate.length > 8 ? ` …and ${res.skippedDuplicate.length - 8} more` : '');
+    if (res.notControls.length)
+      msg += `\n\nNot a control type, so not imported: ${res.notControls.slice(0, 8).join(', ')}` +
+             (res.notControls.length > 8 ? ` …and ${res.notControls.length - 8} more` : '') +
+             `\n\nA control file should hold mAb, control or assay control rows.`;
+    alert(msg);
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// Pure enough to test: reads a workbook, merges what it should, reports the
+// rest. Returns { added, skippedDuplicate, notControls, error }.
+function importControlWorkbook(wb, fileName) {
+  const out = { added: 0, skippedDuplicate: [], notControls: [], error: '' };
+  if (!samples.length) { out.error = 'Load a sample manifest first.'; return out; }
+
+  const sheetName = wb.SheetNames.find(n => n.toLowerCase() === 'input samples') || wb.SheetNames[0];
+  if (!sheetName) { out.error = 'That workbook has no sheets.'; return out; }
+  const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1 });
+  const header = (data[0] || []).map(h => String(h || '').trim().toLowerCase());
+  const { colIdx } = mapManifestColumns(header);
+  if (colIdx['input_id'] < 0) {
+    out.error = `“${sheetName}” has no sample_id column (or input_id on a v4 sheet).\n\n` +
+      `Found: ${header.filter(Boolean).join(', ') || '(no header row)'}`;
+    return out;
+  }
+
+  const fresh = [];
+  for (let i = 1; i < data.length; i++) {
+    const smp = rowToSample(data[i], colIdx, i);
+    if (!smp) continue;
+    const n = normaliseSampleType(smp.sample_type);
+    smp.sample_type = n.type;
+    smp.sample_type_detail = n.detail;
+    smp.sample_type_raw = n.raw;
+    // A control file holds controls. Anything else is almost certainly the
+    // wrong file, and silently adding patient samples to the pool from a
+    // second workbook is the kind of thing nobody notices until the bench.
+    if (!isAnyControl(smp)) { out.notControls.push(smp.input_id || smp.tiu_id); continue; }
+    if (byTiu[smp.tiu_id]) { out.skippedDuplicate.push(smp.tiu_id); continue; }
+    smp.from_control_file = fileName || 'control file';
+    fresh.push(smp);
+  }
+
+  if (!fresh.length) return out;
+
+  // rowIdx addresses the manifest sheet, and these rows do not come from it.
+  // Give them rows past its end so the export can append them there.
+  let next = samples.reduce((mx, s) => Math.max(mx, s.rowIdx || 0), 0) + 1;
+  fresh.forEach(s => { s.rowIdx = next++; });
+
+  samples = samples.concat(fresh);
+  importedControls = importedControls.concat(fresh);
+  controlFileName = fileName || controlFileName;
+  fresh.forEach(s => {
+    byTiu[s.tiu_id] = s;
+    (byInput[s.input_id] = byInput[s.input_id] || []).push(s);
+  });
+  out.added = fresh.length;
+
+  refreshSampleDerived();
+  mutate('controls_imported', { plate: '(all)', well: '(import)',
+                                count: fresh.length, note: `${out.added} from ${fileName}` });
+  // The template offers whatever controls the pool now has.
+  controlTemplate = samples.filter(isAnyControl)
+    .map(s => (controlTemplate.find(e => e.tiu_id === s.tiu_id) || { tiu_id: s.tiu_id, replicates: 0 }));
+  renderControlTemplate();
+  return out;
+}
+
+function clearImportedControls() {
+  if (!importedControls.length) { alert('No imported controls to remove.'); return; }
+  const placed = importedControls.filter(s =>
+    Object.values(plateAssignments).some(pl => Object.values(pl).some(a => a.tiu_id === s.tiu_id)));
+  if (placed.length && !confirm(
+      `${placed.length} imported control(s) are already on a plate.\n\n` +
+      `Removing them here does not clear those wells — clear them first if that is what you want.\n\nRemove anyway?`))
+    return;
+  const gone = new Set(importedControls.map(s => s.tiu_id));
+  samples = samples.filter(s => !gone.has(s.tiu_id));
+  gone.forEach(t => { delete byTiu[t]; });
+  byInput = {};
+  samples.forEach(s => { (byInput[s.input_id] = byInput[s.input_id] || []).push(s); });
+  controlTemplate = controlTemplate.filter(e => !gone.has(e.tiu_id));
+  importedControls = [];
+  controlFileName = '';
+  const label = document.getElementById('ctlFileName');
+  if (label) label.textContent = 'no control file imported';
+  refreshSampleDerived();
+  renderControlTemplate();
+}
+
 function openControlModal() {
   if (!samples.length) { alert('Load a manifest first.'); return; }
   if (!controlTemplate.length) {
@@ -8473,6 +8834,44 @@ function buildInputSamplesSheet() {
       if (tiuCol > r.e.c) { r.e.c = tiuCol; sheet['!ref'] = XLSX.utils.encode_range(r); }
     }
   }
+  // Controls imported from a second workbook are not in the uploaded sheet, so
+  // they are appended here. Without this the plate maps would name identifiers
+  // the manifest does not contain, and the exported file would not re-open.
+  if (importedControls.length) {
+    const FIELD_OF = {
+      tiu_id: 'tiu_id', input_id: 'input_id', subject_id: 'subject_id',
+      subject_age_yrs: 'subject_age_yrs', subject_sex: 'subject_sex',
+      sample_type: 'sample_type', volume_ml: 'volume_mL',
+      collection_date: 'collection_date', cohort: 'cohort',
+      num_freeze_thaws: 'num_freeze_thaws', diagnosis: 'diagnosis', notes: 'notes',
+      dither_group: 'dither_group', repeat_across_plates: 'repeat_across_plates',
+      min_volume_required_ml: 'min_volume_required_mL',
+      source_rack: 'source_rack', source_position: 'source_position'
+    };
+    let maxCol = 0, maxRow = 0;
+    importedControls.forEach(smp => {
+      Object.entries(FIELD_OF).forEach(([col, field]) => {
+        const c = manifestColIdx[col];
+        if (c === undefined || c < 0) return;
+        let v = smp[field];
+        // Say where a control came from, so the row is not a mystery later.
+        if (field === 'notes') {
+          v = [v, `imported from ${smp.from_control_file}`].filter(Boolean).join(' · ');
+        }
+        if (v === '' || v === undefined || v === null) return;
+        sheet[XLSX.utils.encode_cell({ r: smp.rowIdx, c })] = { t: 's', v: String(v) };
+        maxCol = Math.max(maxCol, c);
+      });
+      maxRow = Math.max(maxRow, smp.rowIdx);
+    });
+    if (sheet['!ref']) {
+      const r = XLSX.utils.decode_range(sheet['!ref']);
+      r.e.c = Math.max(r.e.c, maxCol);
+      r.e.r = Math.max(r.e.r, maxRow);
+      sheet['!ref'] = XLSX.utils.encode_range(r);
+    }
+  }
+
   sheet['!cols'] = autoFitColumns(XLSX.utils.sheet_to_json(sheet, { header: 1 }), 8, 30);
   return sheet;
 }
@@ -9170,6 +9569,7 @@ function buildDesignLogSheet() {
     }
     // A control-only session is a real one: stamping the templates and nothing
     // else still needs to say what was stamped.
+    panSeqRows().forEach(r => rows.push(r));
     controlTemplateRows().forEach(r => rows.push(r));
     bridgeCoverageRows().forEach(r => rows.push(r));
     indexAssignmentRows().forEach(r => rows.push(r));
@@ -9188,6 +9588,7 @@ function buildDesignLogSheet() {
   rows.push(['State schema version', STATE_SCHEMA_VERSION]);
   rows.push(['Template user', currentUser() || '(not recorded)']);
   rows.push(['Source file', originalFileName]);
+  rows.push(['PanSeq library pools', panSeqLabel()]);
   // Together with the seed, this is what lets a reader confirm they are
   // regenerating from identical inputs with identical code rather than
   // something that merely looks the same.
@@ -9367,6 +9768,9 @@ function buildDesignState() {
     applied_plan_meta: appliedPlanSummary,
     instance_ids: instanceIds,
     library_ids: libraryIds,
+    panseq_pools: panSeqPools.slice(),
+    imported_controls: importedControls.map(s => s.tiu_id),
+    control_file: controlFileName,
     volume_rules: volumeRules,
     dead_volume_uL: deadVolumeUL,
     freeze_thaw_max: freezeThawMax,
@@ -9425,6 +9829,11 @@ function applyDesignState(st) {
   manualBridge = new Set(st.manual_bridge || []);
   instanceIds = Object.assign({}, st.instance_ids || {});
   libraryIds = Object.assign({}, st.library_ids || {});
+  if (Array.isArray(st.panseq_pools)) {
+    setPanSeqPools(st.panseq_pools);
+    syncPanSeqPicker();
+    savePanSeqPools();
+  }
   if (st.volume_rules) volumeRules = JSON.parse(JSON.stringify(st.volume_rules));
   if (Number.isFinite(st.dead_volume_uL)) deadVolumeUL = st.dead_volume_uL;
   freezeThawMax = Number.isFinite(st.freeze_thaw_max) ? st.freeze_thaw_max : null;
