@@ -2380,7 +2380,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '4d71d25+local changes';
+const DESIGNER_BUILD = '0f842d5+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -7957,6 +7957,8 @@ function handleControlFile(e) {
     if (res.error) { alert(res.error); return; }
     e.target.value = '';                     // allow re-importing the same file
     let msg = `Added ${res.added} control(s) from ${file.name}.`;
+    if (res.templated) msg += `\n\n${res.templated} of them carry a well count, so the ` +
+      `template is laid out ready to stamp.`;
     if (res.skippedDuplicate.length)
       msg += `\n\nAlready present, left alone: ${res.skippedDuplicate.slice(0, 8).join(', ')}` +
              (res.skippedDuplicate.length > 8 ? ` …and ${res.skippedDuplicate.length - 8} more` : '');
@@ -7972,14 +7974,22 @@ function handleControlFile(e) {
 // Pure enough to test: reads a workbook, merges what it should, reports the
 // rest. Returns { added, skippedDuplicate, notControls, error }.
 function importControlWorkbook(wb, fileName) {
-  const out = { added: 0, skippedDuplicate: [], notControls: [], error: '' };
+  const out = { added: 0, templated: 0, skippedDuplicate: [], notControls: [], error: '' };
   if (!samples.length) { out.error = 'Load a sample manifest first.'; return out; }
 
-  const sheetName = wb.SheetNames.find(n => n.toLowerCase() === 'input samples') || wb.SheetNames[0];
+  // "Controls" is what a control file's sheet is called; "Input Samples" is
+  // accepted so a copy of the manifest template works too.
+  const want = ['controls', 'control template', 'input samples'];
+  const sheetName = want.reduce((hit, n) =>
+    hit || wb.SheetNames.find(x => x.toLowerCase() === n), null) || wb.SheetNames[0];
   if (!sheetName) { out.error = 'That workbook has no sheets.'; return out; }
   const data = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header: 1 });
   const header = (data[0] || []).map(h => String(h || '').trim().toLowerCase());
   const { colIdx } = mapManifestColumns(header);
+  // What makes this a template and not just a list of controls: how many wells
+  // each one takes on a plate, and the order they are laid down in.
+  const wellsCol = header.indexOf('wells_per_plate');
+  const orderCol = header.indexOf('order');
   if (colIdx['input_id'] < 0) {
     out.error = `“${sheetName}” has no sample_id column (or input_id on a v4 sheet).\n\n` +
       `Found: ${header.filter(Boolean).join(', ') || '(no header row)'}`;
@@ -8000,6 +8010,11 @@ function importControlWorkbook(wb, fileName) {
     if (!isAnyControl(smp)) { out.notControls.push(smp.input_id || smp.tiu_id); continue; }
     if (byTiu[smp.tiu_id]) { out.skippedDuplicate.push(smp.tiu_id); continue; }
     smp.from_control_file = fileName || 'control file';
+    const row = data[i] || [];
+    const wells = wellsCol >= 0 ? parseInt(row[wellsCol], 10) : NaN;
+    const ord = orderCol >= 0 ? parseFloat(row[orderCol]) : NaN;
+    smp._tplWells = Number.isFinite(wells) ? Math.max(0, Math.min(4, wells)) : null;
+    smp._tplOrder = Number.isFinite(ord) ? ord : null;
     fresh.push(smp);
   }
 
@@ -8022,9 +8037,30 @@ function importControlWorkbook(wb, fileName) {
   refreshSampleDerived();
   mutate('controls_imported', { plate: '(all)', well: '(import)',
                                 count: fresh.length, note: `${out.added} from ${fileName}` });
-  // The template offers whatever controls the pool now has.
-  controlTemplate = samples.filter(isAnyControl)
-    .map(s => (controlTemplate.find(e => e.tiu_id === s.tiu_id) || { tiu_id: s.tiu_id, replicates: 0 }));
+  // The file is the template. Controls it specifies come first, in the order it
+  // gives, with the well counts it gives; anything already in the pool follows,
+  // keeping whatever was chosen for it. A file with no wells_per_plate column
+  // still imports — it is then a list of controls to choose from by hand.
+  const fromFile = fresh.slice().sort((a, b) => {
+    const ao = a._tplOrder, bo = b._tplOrder;
+    if (ao == null && bo == null) return 0;
+    if (ao == null) return 1;
+    if (bo == null) return -1;
+    return ao - bo;
+  });
+  out.templated = fromFile.filter(s => s._tplWells > 0).length;
+  const seen = new Set();
+  const tpl = [];
+  fromFile.forEach(s => {
+    seen.add(s.tiu_id);
+    tpl.push({ tiu_id: s.tiu_id, replicates: s._tplWells == null ? 0 : s._tplWells });
+  });
+  samples.filter(isAnyControl).forEach(s => {
+    if (seen.has(s.tiu_id)) return;
+    seen.add(s.tiu_id);
+    tpl.push(controlTemplate.find(e => e.tiu_id === s.tiu_id) || { tiu_id: s.tiu_id, replicates: 0 });
+  });
+  controlTemplate = tpl;
   renderControlTemplate();
   return out;
 }
