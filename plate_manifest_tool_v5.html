@@ -2327,7 +2327,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '3cba862+local changes';
+const DESIGNER_BUILD = '402a466+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -4344,14 +4344,26 @@ function shuffleInPlace(arr, rng) {
 
 // ─── Grouping ─────────────────────────────────────────────────────────────────
 const GROUP_FIELDS = [
-  { value: 'cohort',       label: 'Cohort' },
-  { value: 'diagnosis',    label: 'Diagnosis' },
-  { value: 'dither_group', label: 'dither_group column' },
-  { value: 'sample_type',  label: 'Sample type' },
-  { value: 'subject_sex',  label: 'Sex' },
-  { value: 'subject_id',   label: 'Subject ID (every subject its own group)' },
-  { value: 'none',         label: 'No grouping — randomise only' }
+  { value: 'cohort',           label: 'Cohort' },
+  { value: 'diagnosis',        label: 'Diagnosis' },
+  { value: 'dither_group',     label: 'dither_group column' },
+  { value: 'sample_type',      label: 'Sample type' },
+  { value: 'subject_sex',      label: 'Sex' },
+  // Derived rather than read off a row: the quartiles depend on the whole run.
+  // It is the one that matters on a single-cohort study, where manifests
+  // usually arrive in draw order and plate would otherwise track date.
+  { value: 'collection_date',  label: 'Collection date quartile', derived: true },
+  { value: 'subject_id',       label: 'Subject ID (every subject its own group)' },
+  { value: 'none',             label: 'No grouping — randomise only' }
 ];
+
+// A field read straight off the sample, or one computed from the whole pool.
+function groupKeyFn(pool, field) {
+  if (field === 'collection_date') {
+    return collectionDateBucketer(pool) || (() => '(unknown)');
+  }
+  return s => groupKeyOf(s, field);
+}
 
 function groupKeyOf(sample, field) {
   if (field === 'none') return 'All samples';
@@ -4363,9 +4375,12 @@ function groupKeyOf(sample, field) {
 function buildGroupBySelect() {
   const sel = document.getElementById('groupByField');
   if (!sel) return;
-  const usable = GROUP_FIELDS.filter(f =>
-    f.value === 'none' || samples.some(s => String(s[f.value] || '').trim())
-  );
+  const pool = samples.filter(isAutofillable);
+  const usable = GROUP_FIELDS.filter(f => {
+    if (f.value === 'none') return true;
+    if (f.value === 'collection_date') return !!collectionDateBucketer(pool);
+    return samples.some(s => String(s[f.value] || '').trim());
+  });
   const prev = sel.value;
   sel.innerHTML = usable.map(f => `<option value="${f.value}">${f.label}</option>`).join('');
   if (usable.some(f => f.value === prev)) sel.value = prev;
@@ -4381,11 +4396,29 @@ function buildGroupBySelect() {
 // subject is held together *within* each type instead — the alternative is a
 // plate that quietly mixes matrices, which is the thing the option exists to
 // prevent.
-function buildUnits(list, keepSubjectTogether, groupField, partitionByType) {
+// Collection date in quartiles. Extracted because it is now both something you
+// can stratify on and something the balance report measures — and if the two
+// cut the run at different places, stratifying on date would produce a report
+// saying date is unbalanced.
+function collectionDateBucketer(pool) {
+  const dates = pool.map(s => Date.parse(s.collection_date)).filter(Number.isFinite);
+  if (dates.length < 4) return null;
+  const bucket = quartileBucketer(dates);
+  if (!bucket) return null;
+  return s => {
+    const t = Date.parse(s.collection_date);
+    if (!Number.isFinite(t)) return '(unknown)';
+    // Relabel the numeric cut points as dates, which is what a reader wants.
+    return bucket(t).replace(/(≤|>)(-?[\d.]+)/, (_, op, ms) =>
+      op + new Date(Number(ms)).toISOString().slice(0, 10));
+  };
+}
+
+function buildUnits(list, keepSubjectTogether, keyOf, partitionByType) {
   if (!keepSubjectTogether) {
     return list.map(s => ({
       id: s.tiu_id, label: s.input_id, subject_id: s.subject_id,
-      group: groupKeyOf(s, groupField), samples: [s], order: s.rowIdx
+      group: keyOf(s), samples: [s], order: s.rowIdx
     }));
   }
   const bySubject = {};
@@ -4394,13 +4427,13 @@ function buildUnits(list, keepSubjectTogether, groupField, partitionByType) {
     const sid = String(s.subject_id || '').trim();
     if (!sid) {
       out.push({ id: s.tiu_id, label: s.input_id, subject_id: '',
-                 group: groupKeyOf(s, groupField), samples: [s], order: s.rowIdx });
+                 group: keyOf(s), samples: [s], order: s.rowIdx });
       return;
     }
     const key = partitionByType ? sid + '|' + (s.sample_type || '') : sid;
     if (!bySubject[key]) {
       bySubject[key] = { id: 'SUBJ:' + key, label: sid, subject_id: sid,
-                         group: groupKeyOf(s, groupField), samples: [], order: s.rowIdx };
+                         group: keyOf(s), samples: [], order: s.rowIdx };
       out.push(bySubject[key]);
     }
     bySubject[key].samples.push(s);
@@ -4478,6 +4511,10 @@ function summarisePlan(m) {
     bridging: (m.bridging || []).map(x => x.input_id),
     unplaced: (m.unplaced || []).reduce((a, u) => a + u.samples.length, 0),
     typePartition: m.typePartition ? JSON.parse(JSON.stringify(m.typePartition)) : null,
+    // Subjects the packer split on purpose, so the validator can tell a
+    // deliberate trade from a hand edit that pulled one apart by accident.
+    splitUnits: JSON.parse(JSON.stringify(m.splitUnits || [])),
+    groupLevels: m.groupLevels,
     volumeExcluded: (m.volumeExcluded || []).slice(),
     volumeSinglet: (m.volumeSinglet || []).slice(),
     volumeFlagged: JSON.parse(JSON.stringify(volumeFlagged || [])),
@@ -4558,7 +4595,8 @@ function computeAutofillPlan(opts) {
              bridgeIgnored: samples.filter(s => isRepeating(s) && !isAutofillable(s)) };
   }
 
-  const units = buildUnits(eligible, opts.keepSubjectTogether, opts.groupField, opts.partitionByType);
+  const groupKey = groupKeyFn(eligible, opts.groupField);
+  const units = buildUnits(eligible, opts.keepSubjectTogether, groupKey, opts.partitionByType);
 
   // Groups are processed in the order they first appear in the manifest, so
   // "cohort A, then cohort B, …" means what it says on the plate.
@@ -4593,6 +4631,9 @@ function computeAutofillPlan(opts) {
   }
 
   const unplaced = [];
+  // Subjects the packer had to split to avoid opening another plate. Reported,
+  // never silent: it relaxes a constraint the user asked for.
+  const splitUnits = [];
   const stranded = {};
   platePool.concat(Object.keys(plateAssignments).map(Number)).forEach(p => {
     if (stranded[p]) return;
@@ -4772,6 +4813,65 @@ function computeAutofillPlan(opts) {
 
       // Anything a window could not take, plus any rounding remainder.
       //
+      // A plate is a day of bench work, so the room already open is spent
+      // before any more is opened. A subject is dealt as one indivisible unit,
+      // and a unit that fits nowhere whole used to start a fresh plate for two
+      // or three samples — four seeds out of five did exactly that on a
+      // 200-sample run that fits five plates exactly. Keeping a subject whole
+      // is worth a lot, but it is not worth a plate, so the unit is split
+      // across the room already in use and the split is reported rather than
+      // done quietly.
+      const roomOn = q => capacity[q] - used[q];
+      const inUse = q => used[q] > 0;
+
+      function placeCarryUnit(u) {
+        const need = u.samples.length;
+
+        // 1. Whole, onto a plate already carrying samples.
+        let p = pool.find(q => inUse(q) && roomOn(q) >= need);
+        if (p !== undefined) { placeUnit(p, u); return; }
+
+        // 2. Whole, onto a plate the run already needs, even if it is still
+        //    empty. Splitting to keep off such a plate buys nothing: the run
+        //    spans it either way, and the next unit would open it regardless.
+        //    Only a plate beyond `active` is a plate genuinely added.
+        p = active.find(q => roomOn(q) >= need);
+        if (p !== undefined) { placeUnit(p, u); return; }
+
+        // 3. Splitting is for one purpose only: to stop a plate being added.
+        //    It is worth doing when the sole whole fit is a plate beyond what
+        //    the run needs. When the run is simply out of room, there is no
+        //    plate to save and the subject stays whole and unplaced, which is
+        //    the honest answer rather than scraps spread over full plates.
+        const wouldAddPlate = reserve.some(q => roomOn(q) >= need);
+        const open = pool.filter(q => inUse(q) && roomOn(q) > 0);
+        const openRoom = open.reduce((a, q) => a + roomOn(q), 0);
+        if (wouldAddPlate && openRoom >= need && open.length) {
+          let rest = u.samples.slice();
+          const across = [];
+          for (const q of open) {
+            if (!rest.length) break;
+            const take = Math.min(roomOn(q), rest.length);
+            if (take <= 0) continue;
+            placeUnit(q, Object.assign({}, u, { samples: rest.slice(0, take) }));
+            rest = rest.slice(take);
+            across.push(q);
+          }
+          if (u.subject_id && across.length > 1) {
+            splitUnits.push({ subject_id: u.subject_id, label: u.label,
+                              samples: need, plates: across.slice() });
+          }
+          return;
+        }
+
+        // 4. Only now is another plate worth it.
+        p = pool.find(q => roomOn(q) >= need);
+        if (p !== undefined) { placeUnit(p, u); return; }
+
+        unplaced.push(u);
+      }
+
+      //
       // Packed, not apportioned. Spreading a six-well remainder across the room
       // left in the whole run is technically the most even thing to do and the
       // worst thing to hand a lab: it leaves two wells on plate 8 and a plate
@@ -4781,12 +4881,7 @@ function computeAutofillPlan(opts) {
       if (carry.length) {
         const byGroup = {};
         carry.forEach(u => { (byGroup[u.group] = byGroup[u.group] || []).push(u); });
-        names.forEach(g => {
-          (byGroup[g] || []).forEach(u => {
-            const p = pool.find(q => capacity[q] - used[q] >= u.samples.length);
-            if (p === undefined) unplaced.push(u); else placeUnit(p, u);
-          });
-        });
+        names.forEach(g => (byGroup[g] || []).forEach(placeCarryUnit));
       }
       planWindows.push(...windows);
       planWindow = Math.max(planWindow, effectiveWindow);
@@ -5000,6 +5095,11 @@ function computeAutofillPlan(opts) {
     bridgeIgnored,
     platesUsed, capacity, used, unplaced, skippedTypes,
     windows: planWindows, effectiveWindow: planWindow, typePartition,
+    splitUnits,
+    // How many distinct values the stratification actually has. One means the
+    // choice did nothing, which is easy to do and invisible afterwards: the
+    // balance report drops a single-level covariate as not a balance question.
+    groupLevels: new Set(units.map(u => u.group)).size,
     unitCount: units.length,
     sampleCount: eligible.length,
     volumeExcluded: [...volumeExcluded],
@@ -5331,6 +5431,36 @@ function previewAutofill(silent) {
   if (res.manualHeld && res.manualHeld.length) {
     notes.push(`↻ ${res.manualHeld.length} sample(s) marked for bridging in the app are left out of autofill — place them by hand: ${escHtml(res.manualHeld.map(s => s.input_id).join(', '))}`);
   }
+  // Stratifying on a column that holds one value is a no-op, and an invisible
+  // one: the balance report drops a single-level covariate, so nothing later
+  // says the choice did nothing. Single-cohort runs hit this by default.
+  if (opts.groupField !== 'none' && res.groupLevels === 1) {
+    // Only suggest a field this manifest could actually stratify on: one that
+    // is present and holds more than one value. Naming a column that is also
+    // single-valued, or absent entirely, sends the reader round the loop again.
+    const pool = samples.filter(isAutofillable);
+    const other = GROUP_FIELDS
+      .filter(f => f.value !== opts.groupField && f.value !== 'none' && f.value !== 'subject_id')
+      .filter(f => new Set(pool.map(groupKeyFn(pool, f.value))).size > 1)
+      .map(f => f.label).slice(0, 3).join(', ');
+    notes.push(`<span class="warn">⚠ Every sample has the same ${escHtml(groupLabel)}, so ` +
+      `stratifying on it does nothing — the layout is whatever the sample order gives. ` +
+      `On a single-cohort run the variable worth balancing is usually collection date ` +
+      `(plates otherwise follow draw order).` +
+      (other ? ` Try: ${escHtml(other)}.` : ' Nothing else in this manifest varies either — ' +
+        'add a dither_group column, or choose “No grouping — randomise only”.') + `</span>`);
+  }
+
+  if (res.splitUnits && res.splitUnits.length) {
+    const list = res.splitUnits.slice(0, 6)
+      .map(x => `${escHtml(x.label)} (${x.samples} samples → plates ${x.plates.join(', ')})`).join('; ');
+    notes.push(`ℹ ${res.splitUnits.length} subject(s) split across plates to avoid opening ` +
+      `another one: ${list}${res.splitUnits.length > 6 ? ' …' : ''}. ` +
+      `Keeping a subject whole is worth a lot but not a whole plate — turn off ` +
+      `“keep every sample from one subject on the same plate”, or reroll the seed, ` +
+      `if you would rather have the extra plate.`);
+  }
+
   notes.push('ℹ Already-assigned wells are preserved and skipped.');
 
   box.innerHTML =
@@ -7294,18 +7424,8 @@ function balanceCovariates() {
       return n <= 1 ? '0–1' : (n <= 3 ? '2–3' : '4+');
     } });
   }
-  const dates = pool.map(s => Date.parse(s.collection_date)).filter(Number.isFinite);
-  const dateBucket = quartileBucketer(dates);
-  if (dateBucket && dates.length >= 4) {
-    out.push({ key: 'collection_date', label: 'Collection date quartile', of: s => {
-      const t = Date.parse(s.collection_date);
-      if (!Number.isFinite(t)) return '(unknown)';
-      const b = dateBucket(t);
-      // relabel the numeric cut points as dates, which is what anyone reading wants
-      return b.replace(/(≤|>)(-?[\d.]+)/, (_, op, ms) =>
-        op + new Date(Number(ms)).toISOString().slice(0, 10));
-    } });
-  }
+  const dateOf = collectionDateBucketer(pool);
+  if (dateOf) out.push({ key: 'collection_date', label: 'Collection date quartile', of: dateOf });
   return out;
 }
 
@@ -8167,12 +8287,26 @@ function validateLayout() {
       const set = platesBySubject[key] = platesBySubject[key] || new Set();
       list.forEach(x => set.add(x.plate));
     });
-    const split = Object.entries(platesBySubject)
+    // A subject the packer split to avoid opening another plate is a trade the
+    // design made on purpose, not a fault. It still has to be reported — a
+    // batch effect can land inside that subject — but as a note, so it does not
+    // sit beside a hand edit that pulled one apart by accident.
+    const deliberate = new Set(((appliedPlanSummary || {}).splitUnits || [])
+      .map(x => String(x.subject_id)));
+    const split = [], onPurpose = [];
+    Object.entries(platesBySubject)
       .filter(([, set]) => set.size > 1)
-      .map(([sub, set]) => `${sub}: plates ${[...set].sort((a, b) => a - b).join(', ')}`);
+      .forEach(([sub, set]) => {
+        const line = `${sub}: plates ${[...set].sort((a, b) => a - b).join(', ')}`;
+        (deliberate.has(sub.replace(/ \(.*\)$/, '')) ? onPurpose : split).push(line);
+      });
     if (split.length)
       add(warnings, 'Subjects split across more than one plate', split,
         '"Keep subject together" was on for this design, so a batch effect could land inside a subject.');
+    if (onPurpose.length)
+      add(notes, 'Subjects the planner split to avoid opening another plate', onPurpose,
+        'Deliberate: the alternative was a plate run for a handful of samples. ' +
+        'Turn off "keep every sample from one subject on the same plate", or reroll the seed, to avoid it.');
   }
 
   if (opts.partitionByType) {
