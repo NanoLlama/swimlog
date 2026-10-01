@@ -2327,7 +2327,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'e411f35';
+const DESIGNER_BUILD = '1b8689d+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -2342,7 +2342,13 @@ let totalPlates = 8;
 let selectedWells = new Set();
 let activeSample = null;
 let originalFileName = 'manifest';
-let duplicateIds = new Set(); // input_ids that appear more than once
+let duplicateIds = new Set(); // sample ids that appear more than once
+// How the loaded manifest spells the investigator's identifier column:
+// 'sample_id' from template v5, 'input_id' on v4 and earlier.
+let idHeader = 'sample_id';
+// Where each column sat in the uploaded sheet, so the export can write back
+// into it rather than guessing.
+let manifestColIdx = {};
 let changeLog = [];           // every edit made to a filled manifest, oldest first
 let restoredFrom = null;      // which sheet a re-opened layout was read back from
 let instanceIds = {};         // 'tiu_id|plate' -> instance_uid, minted at first export
@@ -2812,6 +2818,18 @@ function processFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
+// Template v5 builds tiu_id in the sheet as sample_id + "_" + subject_id. A
+// workbook written by a script rather than by Excel carries the formula with no
+// cached result, and a sheet read for its values then sees an empty cell — so
+// the same rule is applied here. A file that does carry a tiu_id keeps it: the
+// sheet is the authority whenever it has an answer.
+function deriveTiuId(sampleId, subjectId) {
+  const a = String(sampleId || '').trim();
+  const b = String(subjectId || '').trim();
+  if (!a) return '';
+  return b ? `${a}_${b}` : a;
+}
+
 function loadSamples() {
   const sheetNames = workbook.SheetNames.map(s => s.toLowerCase());
   const findSheet = name => {
@@ -2836,7 +2854,7 @@ function loadSamples() {
 
   const colIdx = {};
   const EXPECTED_COLS = [
-    'tiu_id', 'input_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
+    'tiu_id', 'input_id', 'sample_id', 'subject_id', 'subject_age_yrs', 'subject_sex',
     'subject_ethnicity', 'sample_type', 'volume_ml', 'min_volume_required_ml',
     'source_rack', 'source_position', 'collection_date',
     'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
@@ -2849,18 +2867,33 @@ function loadSamples() {
   // volume_mL might have different casing
   if (colIdx['volume_ml'] < 0) colIdx['volume_ml'] = header.indexOf('volume_ml');
 
-  // Validate required columns
-  const missing = [];
-  if (colIdx['tiu_id'] < 0) missing.push('tiu_id');
-  if (colIdx['input_id'] < 0) missing.push('input_id');
-  if (missing.length > 0) {
-    alert(`Error: Required column(s) missing from Input Samples header row:\n${missing.join(', ')}\n\nFound headers: ${header.join(', ')}`);
+  // The investigator-facing identifier is `sample_id` from template v5 onward;
+  // it was `input_id` up to v4. Both are read into the same field, so manifests
+  // already in circulation keep working and nothing downstream has to care.
+  if (colIdx['sample_id'] >= 0) colIdx['input_id'] = colIdx['sample_id'];
+  // Error messages name the column the way this particular sheet spells it,
+  // so the reader can find it.
+  idHeader = colIdx['sample_id'] >= 0 ? 'sample_id' : 'input_id';
+  manifestColIdx = colIdx;
+
+  // Validate required columns. tiu_id is no longer required as a column:
+  // template v5 derives it from sample_id and subject_id, and this does the
+  // same when the column is absent or a cell is empty.
+  if (colIdx['input_id'] < 0) {
+    alert(`Error: the Input Samples sheet needs a "sample_id" column ` +
+      `(or "input_id" on a v4 manifest).\n\nFound headers: ${header.join(', ')}`);
     return;
   }
 
   function getVal(row, col) {
     if (colIdx[col] < 0 || !row) return '';
     return String(row[colIdx[col]] || '').trim();
+  }
+
+  // Used by the duplicate scan and the build loop alike, so the two can never
+  // disagree about which rows the file contains.
+  function rowTiuId(row) {
+    return getVal(row, 'tiu_id') || deriveTiuId(getVal(row, 'input_id'), getVal(row, 'subject_id'));
   }
 
   // tiu_id is the primary key everything else resolves through, so a duplicate
@@ -2871,8 +2904,8 @@ function loadSamples() {
   const dupRows = [];
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (!row || !row[colIdx['tiu_id']]) continue;
-    const t = String(row[colIdx['tiu_id']] || '').trim();
+    if (!row) continue;
+    const t = rowTiuId(row);
     if (!t) continue;
     if (seenTiu[t] !== undefined) dupRows.push({ tiu_id: t, rows: [seenTiu[t], i + 1] });
     else seenTiu[t] = i + 1;
@@ -2882,7 +2915,8 @@ function loadSamples() {
       .map(d => `  ${d.tiu_id} — spreadsheet rows ${d.rows.join(' and ')}`).join('\n');
     alert(`Cannot load this manifest: ${dupRows.length} duplicate tiu_id value(s).\n\n` +
       `tiu_id must be unique — it is the identifier the plate maps, Sample Instances ` +
-      `sheet and barcode assignment all key on.\n\n${detail}` +
+      `sheet and barcode assignment all key on. On template v5 it is built from ` +
+      `${idHeader} and subject_id, so a repeat means two rows share both.\n\n${detail}` +
       (dupRows.length > 8 ? `\n  …and ${dupRows.length - 8} more` : '') +
       `\n\nFix the duplicates and upload again.`);
     samples = [];
@@ -2891,10 +2925,10 @@ function loadSamples() {
 
   for (let i = 1; i < data.length; i++) {
     const row = data[i];
-    if (!row || !row[colIdx['tiu_id']]) continue;
-    const tiu_id = getVal(row, 'tiu_id');
+    if (!row) continue;
     const input_id = getVal(row, 'input_id');
-    if (!tiu_id) continue;
+    const tiu_id = rowTiuId(row);
+    if (!tiu_id) continue;          // a blank row, whichever column is blank
 
     samples.push({
       tiu_id,
@@ -8227,6 +8261,33 @@ function closeValidation() {
 }
 
 // ─── Excel Export ─────────────────────────────────────────────────────────────
+// The Input Samples sheet as it goes into the export: the uploaded sheet, with
+// tiu_id resolved to values.
+//
+// From template v5 tiu_id is a formula over sample_id and subject_id. Writing
+// the workbook out drops formulas, and a sheet Excel had not calculated carries
+// no result either — which left the exported manifest with an empty tiu_id
+// column while the Analysis Plate Maps beside it were full of them. Stamping
+// the values the designer resolved makes the export self-contained for whoever
+// opens it next, and is a no-op when the sheet already had them.
+function buildInputSamplesSheet() {
+  const inputName = workbook.SheetNames.find(s => s.toLowerCase() === 'input samples') || 'Input Samples';
+  const sheet = Object.assign({}, workbook.Sheets[inputName]);
+  const tiuCol = manifestColIdx['tiu_id'];
+  if (tiuCol >= 0) {
+    samples.forEach(smp => {
+      sheet[XLSX.utils.encode_cell({ r: smp.rowIdx, c: tiuCol })] = { t: 's', v: smp.tiu_id };
+    });
+    // The column may sit outside a range that never held a value.
+    if (sheet['!ref']) {
+      const r = XLSX.utils.decode_range(sheet['!ref']);
+      if (tiuCol > r.e.c) { r.e.c = tiuCol; sheet['!ref'] = XLSX.utils.encode_range(r); }
+    }
+  }
+  sheet['!cols'] = autoFitColumns(XLSX.utils.sheet_to_json(sheet, { header: 1 }), 8, 30);
+  return sheet;
+}
+
 function downloadExcel() {
   if (!workbook) { alert('No file loaded.'); return; }
 
@@ -8242,13 +8303,8 @@ function downloadExcel() {
 
   const wb = XLSX.utils.book_new();
 
-  // Copy Input Samples sheet unchanged
-  const inputName = workbook.SheetNames.find(s => s.toLowerCase() === 'input samples') || 'Input Samples';
   wb.SheetNames.push('Input Samples');
-  const inputSheet = workbook.Sheets[inputName];
-  inputSheet['!cols'] = autoFitColumns(
-    XLSX.utils.sheet_to_json(inputSheet, { header: 1 }), 8, 30);
-  wb.Sheets['Input Samples'] = inputSheet;
+  wb.Sheets['Input Samples'] = buildInputSamplesSheet();
 
   // Build Lab Plate Maps
   wb.SheetNames.push('Lab Plate Maps');
