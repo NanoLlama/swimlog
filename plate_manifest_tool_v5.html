@@ -1921,7 +1921,7 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   <div class="autofill-modal af-wide">
     <div class="af-head">
       <h2 style="margin:0;">⚡ Autofill plates</h2>
-      <div class="af-sub">Serum, CSF and plasma only · cols 1–10 · controls stay manual</div>
+      <div class="af-sub">Serum, plasma, whole blood and CSF · cols 1–10 · controls stay manual</div>
       <button type="button" class="af-x" onclick="closeAutofillModal()" aria-label="Close">×</button>
     </div>
 
@@ -2327,7 +2327,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '1b8689d+local changes';
+const DESIGNER_BUILD = '3cba862+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -3033,7 +3033,7 @@ function loadSamples() {
       .map(c => `<option value="${escHtml(c)}">${escHtml(c)}</option>`).join('');
 
   // Build sample_type filter dropdown — use known types + any from data
-  const knownTypes = ['serum', 'plasma', 'CSF', 'mAb', 'control', 'assay control'];
+  const knownTypes = ['serum', 'plasma', 'whole blood', 'CSF', 'mAb', 'control', 'assay control'];
   const dataTypes = [...new Set(samples.map(s => s.sample_type).filter(Boolean))];
   const allTypes = [...new Set([...knownTypes.filter(t => dataTypes.map(d => d.toLowerCase()).includes(t.toLowerCase())), ...dataTypes])].sort();
   const typeSel = document.getElementById('sampleTypeFilter');
@@ -3564,6 +3564,8 @@ function updateControlAreaLabel() {
 const SAMPLE_TYPE_ALIASES = {
   serum: ['serum', 'sera', 'serum sample', 'ser'],
   plasma: ['plasma', 'edta plasma', 'citrate plasma', 'heparin plasma', 'plsm'],
+  'whole blood': ['whole blood', 'whole-blood', 'wholeblood', 'wb', 'blood',
+                  'edta whole blood', 'heparin whole blood'],
   CSF: ['csf', 'c.s.f.', 'cerebrospinal fluid', 'cerebro-spinal fluid', 'spinal fluid'],
   mAb: ['mab', 'mabs', 'monoclonal', 'monoclonal antibody', 'monoclonal antibodies',
         'antibody control', 'mab control'],
@@ -3667,11 +3669,14 @@ function getPlateNumsFor(input_id) {
   return plates;
 }
 
-// Only serum, CSF, and plasma are autofilled; everything else is manual
+// Only the biological types are autofilled; everything else is manual
+// The biological sample types, which autofill lays down. Everything else —
+// mAbs, controls, assay controls — is placed by hand in the control area.
+const AUTOFILL_TYPES = new Set(['serum', 'csf', 'plasma', 'whole blood']);
+
 function isAutofillable(sample) {
   if (!sample) return false;
-  const t = (sample.sample_type || '').toLowerCase();
-  return t === 'serum' || t === 'csf' || t === 'plasma';
+  return AUTOFILL_TYPES.has((sample.sample_type || '').toLowerCase());
 }
 
 function renderPlate() {
@@ -4522,7 +4527,7 @@ function computeAutofillPlan(opts) {
   const rng = makeRng(opts.seed);
   const assignedTiuIds = getAssignedTiuIds();
 
-  // Only serum, CSF and plasma are autofilled — controls/mAbs stay manual.
+  // Only the biological types are autofilled — controls/mAbs stay manual.
   // Bridging samples are held aside: they are placed once per target plate
   // rather than dealt like an ordinary sample.
   const autofillable = samples.filter(s => isAutofillable(s));
@@ -5185,7 +5190,7 @@ function previewAutofill(silent) {
   const box = document.getElementById('autofillPreview');
 
   if (res.empty) {
-    box.innerHTML = 'No unassigned serum/CSF/plasma samples to place.' +
+    box.innerHTML = 'No unassigned serum, plasma, whole blood or CSF samples to place.' +
       (res.skippedTypes.length ? `<br><br>Skipped (manual placement): ${escHtml(res.skippedTypes.join(', '))}` : '');
     autofillPlan = null;
     lastPlanMeta = null;
@@ -7813,7 +7818,12 @@ function deleteControlTemplate() {
 const DEFAULT_VOLUME_RULES = {
   CSF:    { mode: 'per-well', uL: 20, note: '10 µL per well × 2 rounds' },
   serum:  { mode: 'flat',     uL: 5,  note: 'diluted — neat floor, does not scale with wells' },
-  plasma: { mode: 'flat',     uL: 5,  note: 'diluted — neat floor, does not scale with wells' }
+  plasma: { mode: 'flat',     uL: 5,  note: 'diluted — neat floor, does not scale with wells' },
+  // A type with no rule gets no check at all, which is a silent gap rather than
+  // a safe default. This mirrors serum so the check exists; the note says in the
+  // dialog that the number is assumed, because nobody told us this lab's floor.
+  'whole blood': { mode: 'flat', uL: 5,
+                   note: 'ASSUMED — copied from serum. Set your own floor before relying on it.' }
 };
 let volumeRules = JSON.parse(JSON.stringify(DEFAULT_VOLUME_RULES));
 let deadVolumeUL = 0;
