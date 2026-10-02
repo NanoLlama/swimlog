@@ -2384,7 +2384,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '4e7d2af+local changes';
+const DESIGNER_BUILD = 'a1b6c70+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -2891,6 +2891,29 @@ const MANIFEST_COLS = [
   'cohort', 'num_freeze_thaws', 'diagnosis', 'notes',
   'dither_group', 'repeat_across_plates'
 ];
+
+// Header names drift between runs and between labs. The designer reads the
+// column by meaning, not by one spelling, so a file that says "replicates" or
+// "n_wells" works without a code change.
+const HEADER_ALIASES = {
+  wells: ['wells_per_plate', 'wells per plate', 'wells/plate', 'wells_plate',
+          'wells', 'well_count', 'wellcount',
+          'n_wells', 'num_wells', 'number_of_wells', 'replicates', 'reps',
+          'replicate_wells', 'copies', 'wells_each'],
+  order: ['order', 'stamp_order', 'sort', 'sort_order', 'position', 'pos',
+          'rank', 'priority', 'seq', 'sequence', 'index']
+};
+
+// Returns the index of the first header that matches any alias, comparing with
+// punctuation and spacing flattened so "Wells / plate" and "wells_per_plate"
+// are the same name.
+function findHeader(header, aliases) {
+  const norm = t => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, '_')
+                      .replace(/^_|_$/g, '');
+  const want = new Set((aliases || []).map(norm));
+  for (let i = 0; i < header.length; i++) if (want.has(norm(header[i]))) return i;
+  return -1;
+}
 
 function mapManifestColumns(header) {
   const colIdx = {};
@@ -3681,6 +3704,11 @@ function isAssayControl(sample) {
 
 function isAnyControl(sample) {
   if (!sample) return false;
+  // A control sheet names its own controls. Runs invent control types — a new
+  // standard, a pooled reference, a titration ladder — and the designer should
+  // not need a new build to accept one, so a row that arrived from a control
+  // file counts as a control whatever its sample_type says.
+  if (sample.is_control) return true;
   const t = (sample.sample_type || '').toLowerCase();
   return t === 'assay control' || t === 'control' || t === 'mab';
 }
@@ -7955,13 +7983,25 @@ function planControlTemplate(plateNum, template, rotate, seed) {
       : `plate ${plateNum} has no reserved area — set one under Control area` };
   }
   if (template.length > chunks.length) {
-    const reserved = reservedOn(plateNum).size;
-    const blocked = reserved - chunks.length * size;
+    const res = reservedOn(plateNum);
+    const held = Object.entries(plateAssignments[plateNum] || {})
+      .filter(([w, a]) => res.has(w) && !isAnyControl(byTiu[a.tiu_id])).length;
+    // Two different faults read the same from a chunk count. Samples sitting in
+    // the area is one. The other is an area that is big enough in total but not
+    // cut into whole blocks of `size` — which is what happens at a well count
+    // that does not divide the plate, and is fixed by sizing, not by clearing.
+    let why = '', fix = 'enlarge the area, use fewer wells each, or re-run autofill ' +
+                        'with the area reserved';
+    if (held > 0) {
+      why = ` — ${held} well(s) of its control area hold samples`;
+    } else if (res.size >= template.length * size) {
+      why = ` — its control area is ${res.size} well(s), enough in total, but not laid out ` +
+            `as whole blocks of ${size}`;
+      fix = 'use “Size the area to this template”, which cuts it to fit';
+    }
     return { ok: false, wells: [],
       reason: `plate ${plateNum} has room for ${chunks.length} control(s) of ${size} well(s), ` +
-        `the template needs ${template.length}` +
-        (blocked > 0 ? ` — ${blocked} well(s) of its control area hold samples` : '') +
-        ` (enlarge the area, use fewer wells each, or re-run autofill with the area reserved)` };
+        `the template needs ${template.length}${why} (${fix})` };
   }
 
   const offset = rotate ? Math.floor(makeRng(hashSeed(`${seed}|ctl|${plateNum}`))() * chunks.length) : 0;
@@ -8009,19 +8049,28 @@ function handleControlFile(e) {
     if (res.skippedDuplicate.length)
       msg += `\n\nAlready present, left alone: ${res.skippedDuplicate.slice(0, 8).join(', ')}` +
              (res.skippedDuplicate.length > 8 ? ` …and ${res.skippedDuplicate.length - 8} more` : '');
+    if (res.byDeclaration.length)
+      msg += `\n\nTaken as controls because the sheet is a control sheet, though their ` +
+             `sample_type is not a control type: ${res.byDeclaration.slice(0, 8).join(', ')}` +
+             (res.byDeclaration.length > 8 ? ` …and ${res.byDeclaration.length - 8} more` : '');
     if (res.notControls.length)
       msg += `\n\nNot a control type, so not imported: ${res.notControls.slice(0, 8).join(', ')}` +
              (res.notControls.length > 8 ? ` …and ${res.notControls.length - 8} more` : '') +
-             `\n\nA control file should hold mAb, control or assay control rows.`;
+             `\n\nThese name a sample type this tool knows is patient material ` +
+             `(serum, plasma, whole blood, CSF), which is how a manifest gets loaded as a ` +
+             `control file by mistake. A control type it does not recognise is accepted as ` +
+             `a control, so a new kind of control needs no change here — give it its own ` +
+             `sample_type rather than a specimen one.`;
     alert(msg);
   };
   reader.readAsArrayBuffer(file);
 }
 
 // Pure enough to test: reads a workbook, merges what it should, reports the
-// rest. Returns { added, skippedDuplicate, notControls, error }.
+// rest. Returns { added, skippedDuplicate, notControls, byDeclaration, error }.
 function importControlWorkbook(wb, fileName) {
-  const out = { added: 0, templated: 0, skippedDuplicate: [], notControls: [], error: '' };
+  const out = { added: 0, templated: 0, skippedDuplicate: [], notControls: [],
+                byDeclaration: [], error: '' };
   if (!samples.length) { out.error = 'Load a sample manifest first.'; return out; }
 
   // "Controls" is what a control file's sheet is called; "Input Samples" is
@@ -8035,8 +8084,21 @@ function importControlWorkbook(wb, fileName) {
   const { colIdx } = mapManifestColumns(header);
   // What makes this a template and not just a list of controls: how many wells
   // each one takes on a plate, and the order they are laid down in.
-  const wellsCol = header.indexOf('wells_per_plate');
-  const orderCol = header.indexOf('order');
+  const wellsCol = findHeader(header, HEADER_ALIASES.wells);
+  const orderCol = findHeader(header, HEADER_ALIASES.order);
+  // Is this sheet a control sheet, or a copy of a sample manifest? A sheet that
+  // says so in its name, or that carries a well-count column, is a control
+  // sheet, and every row on it is a control. A manifest copy is not, and its
+  // patient rows must not join the pool from a second workbook — that is the
+  // one thing nobody notices until the bench.
+  const declared = /^(controls|control template)$/.test(sheetName.toLowerCase()) || wellsCol >= 0;
+
+  // On a control sheet an *unrecognised* sample_type is a control type this
+  // build has not been told about — a pooled reference, an IVIG standard, a
+  // titration ladder — and is taken at the sheet's word. A *recognised*
+  // specimen type is not: serum, plasma, whole blood and CSF are patient
+  // material, and a row of it in a control file means the wrong file.
+  const takeOnTrust = smp => declared && !normaliseSampleType(smp.sample_type_raw).known;
   if (colIdx['input_id'] < 0) {
     out.error = `“${sheetName}” has no sample_id column (or input_id on a v4 sheet).\n\n` +
       `Found: ${header.filter(Boolean).join(', ') || '(no header row)'}`;
@@ -8054,13 +8116,21 @@ function importControlWorkbook(wb, fileName) {
     // A control file holds controls. Anything else is almost certainly the
     // wrong file, and silently adding patient samples to the pool from a
     // second workbook is the kind of thing nobody notices until the bench.
-    if (!isAnyControl(smp)) { out.notControls.push(smp.input_id || smp.tiu_id); continue; }
+    if (!isAnyControl(smp)) {
+      if (!takeOnTrust(smp)) { out.notControls.push(smp.input_id || smp.tiu_id); continue; }
+      // Taken at the sheet's word, and reported so the call is visible.
+      smp.is_control = true;
+      out.byDeclaration.push(`${smp.input_id || smp.tiu_id}${n.type ? ` (${n.type})` : ''}`);
+    }
     if (byTiu[smp.tiu_id]) { out.skippedDuplicate.push(smp.tiu_id); continue; }
     smp.from_control_file = fileName || 'control file';
     const row = data[i] || [];
     const wells = wellsCol >= 0 ? parseInt(row[wellsCol], 10) : NaN;
     const ord = orderCol >= 0 ? parseFloat(row[orderCol]) : NaN;
-    smp._tplWells = Number.isFinite(wells) ? Math.max(0, Math.min(4, wells)) : null;
+    // A plate holds 96 wells and that is the only real ceiling. Clamping to a
+    // handful here silently rewrote the file's own number; a count that will
+    // not fit is caught by the fit check, where it can be explained.
+    smp._tplWells = Number.isFinite(wells) ? Math.max(0, Math.min(96, wells)) : null;
     smp._tplOrder = Number.isFinite(ord) ? ord : null;
     fresh.push(smp);
   }
@@ -8156,6 +8226,8 @@ function renderControlTemplate() {
   const chosen = controlTemplate.filter(e => e.replicates > 0);
 
   document.getElementById('ctlBody').innerHTML = `
+    <datalist id="ctlWellOpts">${[0, 1, 2, 3, 4, 6, 8]
+      .map(n => `<option value="${n}"></option>`).join('')}</datalist>
     <table class="balance-table" style="width:100%;">
       <tr><th>Control</th><th>Type</th><th>Wells</th><th>Order</th></tr>
       ${controlTemplate.map((e, i) => {
@@ -8165,13 +8237,11 @@ function renderControlTemplate() {
           <td>${escHtml(s.input_id || e.tiu_id)}<div style="font-size:9px;color:var(--muted);">${escHtml(e.tiu_id)}</div></td>
           <td>${escHtml(s.sample_type || '—')}</td>
           <td>
-            <select style="font-size:11px;" onchange="setControlEntry(${i}, this.value)">
-              <option value="0"${e.replicates === 0 ? ' selected' : ''}>not used</option>
-              <option value="1"${e.replicates === 1 ? ' selected' : ''}>1 well</option>
-              <option value="2"${e.replicates === 2 ? ' selected' : ''}>2 wells</option>
-              <option value="3"${e.replicates === 3 ? ' selected' : ''}>3 wells</option>
-              <option value="4"${e.replicates === 4 ? ' selected' : ''}>4 wells</option>
-            </select>
+            <input type="number" min="0" max="96" step="1" value="${e.replicates}"
+                   list="ctlWellOpts" style="font-size:11px;width:62px;"
+                   title="Wells this control takes on each plate. 0 leaves it out."
+                   onchange="setControlEntry(${i}, this.value)">
+            <span style="font-size:10px;color:var(--muted);">${e.replicates === 0 ? 'not used' : e.replicates === 1 ? 'well' : 'wells'}</span>
           </td>
           <td style="text-align:right;">
             ${e.replicates > 0 ? `${pos + 1}
@@ -8237,7 +8307,8 @@ function renderControlTemplate() {
 
 function setControlEntry(i, value) {
   if (!controlTemplate[i]) return;
-  controlTemplate[i].replicates = parseInt(value, 10) || 0;
+  const n = parseInt(value, 10);
+  controlTemplate[i].replicates = Number.isFinite(n) ? Math.max(0, Math.min(96, n)) : 0;
   renderControlTemplate();
 }
 
@@ -8296,17 +8367,47 @@ function templateAreaWells(template) {
 // always sat. Taking it from the end also keeps it aligned to the chunk stride:
 // the stride divides 96, so 96 − N is a multiple of it whenever N is, and a
 // top-aligned block of three-well chunks would not be.
+// The area is built out of the same chunks the stamp will cut: whole blocks of
+// `size`, taken from the far end of the plate. Cutting it that way is what makes
+// it work for any well count. Taking the last N slots only aligns when the chunk
+// size divides 96 — a 7-well control would get a 28-well area the stamp could
+// not use, because its chunk boundaries fall at 0, 7, 14 … and 96 − 28 = 68 is
+// not one of them.
 function templateAreaWellSet(template, layout) {
-  const need = templateAreaWells(template);
-  if (!need) return null;
+  const chosen = (template || []).filter(e => e.replicates > 0);
+  if (!chosen.length) return null;
+  const size = chosen.reduce((mx, e) => Math.max(mx, e.replicates || 1), 1);
   const slots = getSampleSlots(layout || 'pair-down');
-  if (need > slots.length) return null;
-  return new Set(slots.slice(slots.length - need));
+  const chunks = [];
+  for (let i = 0; i + size <= slots.length; i += size) chunks.push(slots.slice(i, i + size));
+  if (chosen.length > chunks.length) return null;      // will not fit a plate
+  const set = new Set();
+  chunks.slice(chunks.length - chosen.length).forEach(c => c.forEach(w => set.add(w)));
+  return set;
 }
 
 // Plates the samples would need with `areaWells` held back on each.
-function platesForArea(areaWells, replicates) {
-  const per = Math.floor((96 - areaWells) / Math.max(1, replicates));
+// Chunks autofill can cut on a plate with `wellSet` reserved. Counted, not
+// divided: (96 − area) ÷ replicates assumes the area starts on a replicate
+// boundary, and a block that does not strands the chunk straddling its edge.
+// That is how a hint came to promise five plates on a run that then took six.
+function chunkCapacity(wellSet, replicates, layout) {
+  const slots = getSampleSlots(layout || 'pair-down');
+  const reps = Math.max(1, replicates);
+  let n = 0;
+  for (let i = 0; i + reps <= slots.length; i += reps) {
+    if (slots.slice(i, i + reps).every(w => !wellSet.has(w))) n++;
+  }
+  return n;
+}
+
+// Plates this run needs with that area reserved on every plate. `area` is a well
+// set, or a count — a count means the default area, which is the last N slots.
+function platesForArea(area, replicates, layout) {
+  const slots = getSampleSlots(layout || 'pair-down');
+  const set = area instanceof Set ? area
+            : new Set(slots.slice(slots.length - Math.max(0, area || 0)));
+  const per = chunkCapacity(set, replicates, layout);
   const n = samples.filter(isAutofillable).length;
   return per > 0 ? Math.ceil(n / per) : Infinity;
 }
@@ -8321,9 +8422,10 @@ function updateAreaHint(chosen) {
   if (!need) { box.textContent = ''; if (btn) btn.disabled = true; return; }
   if (btn) btn.disabled = false;
   const reps = parseInt((document.getElementById('replicateCount') || {}).value, 10) || 2;
-  const now = platesForArea(16, reps), sized = platesForArea(need, reps);
   const layout = (document.getElementById('replicateLayout') || {}).value || 'pair-down';
   const wells = templateAreaWellSet(controlTemplate, layout);
+  const now = platesForArea(16, reps, layout);
+  const sized = wells ? platesForArea(wells, reps, layout) : Infinity;
   const where = wells ? describeWellSet(wells) : '';
   if (Number.isFinite(now) && Number.isFinite(sized) && sized < now && need < 16) {
     box.innerHTML = `This template needs <strong>${need}</strong> of the 16 wells the default ` +
@@ -8333,6 +8435,17 @@ function updateAreaHint(chosen) {
   } else if (need < 16) {
     box.innerHTML = `This template needs <strong>${need}</strong> of the 16 wells the default ` +
       `area holds. Sizing the area to it (${escHtml(where)}) frees the rest for samples.`;
+  } else if (!wells) {
+    box.innerHTML = `This template needs <strong>${need}</strong> wells a plate, more than ` +
+      `a plate has. Reduce the well counts or drop a control.`;
+  } else if (need > 16) {
+    // Bigger than the default area, which is the case that cannot be stamped at
+    // all until the area is resized — so the hint matters more here, not less.
+    box.innerHTML = `This template needs <strong>${need}</strong> wells a plate, more than the ` +
+      `16 the default area holds, so it cannot be stamped until the area is bigger. ` +
+      `Sizing the area to it reserves ${escHtml(where)}` +
+      (Number.isFinite(sized) ? `, and this run then needs <strong>${sized} plate(s)</strong>` +
+        (Number.isFinite(now) && sized > now ? ` rather than ${now}` : '') : '') + `.`;
   } else {
     box.textContent = '';
   }
@@ -8357,7 +8470,7 @@ function sizeAreaToTemplate() {
   }));
 
   const reps = parseInt((document.getElementById('replicateCount') || {}).value, 10) || 2;
-  const before = platesForArea(16, reps), after = platesForArea(wells.size, reps);
+  const before = platesForArea(16, reps, layout), after = platesForArea(wells, reps, layout);
   const saving = Number.isFinite(before) && Number.isFinite(after) && after < before
     ? `\n\nAt ${reps} replicate(s) this run would need ${after} plate(s) rather than ${before}.`
     : '';
@@ -8385,15 +8498,38 @@ function sizeAreaToTemplate() {
 
 // "rows D–H of columns 11–12", or a well list when it is not a clean block.
 function describeWellSet(set) {
-  const list = [...set];
-  const rows = [...new Set(list.map(w => w[0]))].sort();
-  const cols = [...new Set(list.map(w => parseInt(w.slice(1), 10)))].sort((a, b) => a - b);
-  if (rows.length * cols.length === list.length) {
-    const r = rows.length === 1 ? `row ${rows[0]}` : `rows ${rows[0]}–${rows[rows.length - 1]}`;
-    const c = cols.length === 1 ? `column ${cols[0]}` : `columns ${cols[0]}–${cols[cols.length - 1]}`;
-    return `${r} of ${c}`;
+  const slots = getSampleSlots('pair-down');
+  const list = slots.filter(w => set.has(w));          // fill order, not insertion order
+  if (!list.length) return 'no wells';
+  const rows = ROWS.filter(r => list.some(w => w[0] === r));
+  const cols = COLS.filter(c => list.some(w => +w.slice(1) === c));
+  const runs = arr => arr.every((v, i) => i === 0 || v === arr[i - 1] + 1);
+  const colRun = runs(cols), rowRun = runs(rows.map(r => ROWS.indexOf(r)));
+  const colSpan = cs => cs.length === 1 ? `column ${cs[0]}`
+                                        : `columns ${cs[0]}\u2013${cs[cs.length - 1]}`;
+
+  if (rows.length * cols.length === list.length && colRun && rowRun) {
+    const r = rows.length === 1 ? `row ${rows[0]}`
+                                : `rows ${rows[0]}\u2013${rows[rows.length - 1]}`;
+    return `${r} of ${colSpan(cols)}`;
   }
-  return list.slice(0, 10).join(', ') + (list.length > 10 ? ', …' : '');
+
+  // Whole columns plus a partial block — describable only when every partial
+  // column holds the same contiguous rows. Otherwise the shape is not a
+  // rectangle and naming row and column ranges would misdescribe it, which is
+  // worse than saying how many wells and where they start.
+  const full = cols.filter(c => ROWS.every(r => set.has(`${r}${c}`)));
+  const partial = cols.filter(c => !full.includes(c));
+  if (full.length && partial.length && runs(full) && runs(partial)) {
+    const rowsOf = c => ROWS.filter(r => set.has(`${r}${c}`)).join('');
+    const same = partial.every(c => rowsOf(c) === rowsOf(partial[0]));
+    const pr = ROWS.filter(r => set.has(`${r}${partial[0]}`));
+    if (same && runs(pr.map(r => ROWS.indexOf(r)))) {
+      return `all of ${colSpan(full)}, plus rows ${pr[0]}\u2013${pr[pr.length - 1]} ` +
+             `of ${colSpan(partial)}`;
+    }
+  }
+  return `${list.length} wells, ${list[0]} to ${list[list.length - 1]} in fill order`;
 }
 
 function applyControlTemplate() {
