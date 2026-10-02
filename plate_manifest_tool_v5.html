@@ -1805,6 +1805,14 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
               <option value="">All sample types</option>
             </select>
           </div>
+          <div class="search-box" style="border-bottom:1px solid var(--border);">
+            <!-- Wells a run leaves free are filled by hand, and what goes in them
+                 is not always in the manifest. -->
+            <button class="btn btn-ghost" style="width:100%;padding:5px 10px;font-size:11.5px;"
+                    onclick="openHandModal()"
+                    title="Add a sample or control that is not in the manifest, to put into a free well">
+              + Add a sample or control by hand</button>
+          </div>
           <div id="cohortLegend" style="display:none; padding:8px 12px; border-bottom:1px solid var(--border); flex-direction:column; gap:5px;"></div>
           <div class="sample-list" id="sampleList">
             <div class="empty-state"><div class="big">🧪</div>Upload a manifest to begin</div>
@@ -2237,6 +2245,69 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   </div>
 </div>
 
+<div class="autofill-modal-overlay hidden" id="handOverlay">
+  <div class="autofill-modal" style="max-width:560px;">
+    <h2>✎ Add by hand</h2>
+    <p style="margin-bottom:10px;">
+      A row that is not in the manifest — a sample for a well the run left free, or a
+      control the core lab adds. It joins the pool like any other row and is written
+      into the exported manifest.
+    </p>
+    <div style="display:flex;gap:16px;align-items:center;margin-bottom:12px;
+                padding:9px 11px;background:var(--surface2);border-radius:7px;">
+      <span style="font-size:12px;font-weight:600;">This is a</span>
+      <label class="toggle-wrap" style="margin:0;">
+        <input type="radio" name="handKind" value="sample" checked onchange="onHandKindChange()">
+        <span>Sample — placed in a well, among the samples</span>
+      </label>
+      <label class="toggle-wrap" style="margin:0;">
+        <input type="radio" name="handKind" value="control" onchange="onHandKindChange()">
+        <span>Control — stamped into the reserved area</span>
+      </label>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;">
+      <div>
+        <label for="handId" style="font-size:10px;">Name (sample_id) <span style="color:#b84040;">*</span></label>
+        <input type="text" id="handId" placeholder="e.g. TIU-0451" style="width:100%;"
+               onkeydown="if (event.key === 'Enter') addHandEntry();">
+      </div>
+      <div id="handSubjectWrap">
+        <label for="handSubject" style="font-size:10px;">Subject ID</label>
+        <input type="text" id="handSubject" placeholder="e.g. SUBJ-12" style="width:100%;"
+               onkeydown="if (event.key === 'Enter') addHandEntry();">
+      </div>
+      <div>
+        <label for="handType" style="font-size:10px;">Sample type <span style="color:#b84040;">*</span></label>
+        <input type="text" id="handType" list="handTypeOpts" style="width:100%;"
+               onkeydown="if (event.key === 'Enter') addHandEntry();">
+        <datalist id="handTypeOpts"></datalist>
+      </div>
+      <div>
+        <label for="handCohort" style="font-size:10px;">Cohort</label>
+        <input type="text" id="handCohort" list="handCohortOpts" style="width:100%;"
+               onkeydown="if (event.key === 'Enter') addHandEntry();">
+        <datalist id="handCohortOpts"></datalist>
+      </div>
+      <div>
+        <label for="handVolume" style="font-size:10px;">Volume (mL)</label>
+        <input type="number" id="handVolume" min="0" step="0.01" placeholder="optional" style="width:100%;"
+               onkeydown="if (event.key === 'Enter') addHandEntry();">
+      </div>
+      <div id="handWellsWrap" style="display:none;">
+        <label for="handWells" style="font-size:10px;">Wells on every plate</label>
+        <input type="number" id="handWells" min="0" max="96" step="1" value="2" style="width:100%;"
+               onkeydown="if (event.key === 'Enter') addHandEntry();">
+      </div>
+    </div>
+    <div id="handNote" style="margin-top:10px;font-size:11.5px;color:var(--muted);line-height:1.5;"></div>
+    <div id="handAdded" style="margin-top:8px;font-size:11.5px;color:#2d7d46;line-height:1.5;"></div>
+    <div class="modal-actions" style="margin-top:14px;">
+      <button class="btn btn-ghost" onclick="closeHandModal()">Close</button>
+      <button class="btn btn-primary" onclick="addHandEntry()">Add to the run</button>
+    </div>
+  </div>
+</div>
+
 <div class="autofill-modal-overlay hidden" id="controlOverlay">
   <div class="autofill-modal" style="max-width:820px;">
     <h2>🧪 Control template</h2>
@@ -2407,7 +2478,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'cbd4989+local changes';
+const DESIGNER_BUILD = 'c3f4a1d+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -8101,7 +8172,8 @@ function planControlTemplate(plateNum, template, rotate, seed) {
 // Imported rows are tagged so the export can write them back into Input
 // Samples — otherwise the plate maps would name identifiers the manifest does
 // not contain, and the file would not re-open.
-let importedControls = [];     // samples added from a control file
+let importedControls = [];     // rows added inside the designer: imported from a
+                               // control file, or typed in by hand
 let controlFileName = '';
 
 function handleControlFile(e) {
@@ -8271,70 +8343,239 @@ function importControlWorkbook(wb, fileName) {
 // arrived; only the note on the exported row says so.
 const HAND_ADDED = '(added by hand)';
 
-function addControlByHand() {
-  const idEl = document.getElementById('ctlNewId');
-  const typeEl = document.getElementById('ctlNewType');
-  const wellsEl = document.getElementById('ctlNewWells');
-  const name = String((idEl || {}).value || '').trim();
-  if (!name) { alert('Give the control a name — it is what the Lab Plate Maps will show.'); return; }
+const CONTROL_TYPE_KEYS = ['assay control', 'control', 'mab'];
 
-  // Both keys have to be clear. tiu_id is the primary key, but a manifest row
-  // carrying a subject_id has a tiu_id of sample_id_subject_id — so checking it
-  // alone lets a typed name collide with an existing sample_id and put two rows
-  // in the pool under one name.
-  const tiu_id = deriveTiuId(name, '');
-  const clash = byTiu[tiu_id] || (byInput[name] || [])[0];
-  if (clash) {
-    const where = clash.from_control_file === HAND_ADDED ? 'typed in here'
-                : clash.from_control_file ? `from ${clash.from_control_file}`
-                : 'from the manifest';
-    alert(`“${name}” is already in this run (${where}${
-      clash.tiu_id !== tiu_id ? `, as ${clash.tiu_id}` : ''}).\n\n` +
-      `Set its wells in the table below rather than adding it twice.`);
-    return;
+// A row typed into the designer rather than read from a file: a control the
+// core lab adds at the bench, or a sample going into wells the run left free.
+// Making someone edit a spreadsheet and re-import to place one well is the
+// wrong shape of work.
+//
+// Whichever it is, it joins the pool exactly as an imported row does — same
+// merge, same export row, same removal — so nothing downstream has to know how
+// it arrived; only the note on the exported row says so.
+//
+// Returns { ok, error, warning, sample }. The caller shows them; this does not
+// touch the DOM, so both callers and the tests get the same rules.
+function addPoolEntry(spec) {
+  const name = String(spec.name || '').trim();
+  const kind = spec.kind === 'sample' ? 'sample' : 'control';
+  if (!name) {
+    return { ok: false, error: kind === 'control'
+      ? 'Give the control a name — it is what the Lab Plate Maps will show.'
+      : 'Give the sample a name — it is the sample_id the export will carry.' };
   }
 
-  // The same rule the control file follows: a type this build does not know is
-  // a control type it has not been told about, but a recognised specimen type
-  // is patient material and never a control.
-  const raw = String((typeEl || {}).value || '').trim() || 'control';
+  // Where a row already in the pool came from, and what to do with it instead.
+  const already = (c, shownAs) => {
+    const where = c.from_control_file === HAND_ADDED ? 'typed in here'
+                : c.from_control_file ? `from ${c.from_control_file}` : 'from the manifest';
+    return `“${shownAs}” is already in this run (${where}` +
+      `${c.tiu_id !== shownAs ? `, as ${c.tiu_id}` : ''}).\n\n` +
+      (kind === 'control' ? 'Set its wells in the table below rather than adding it twice.'
+                          : 'Use the one that is there rather than adding it twice.');
+  };
+
+  const subjectId = String(spec.subjectId || '').trim();
+  const tiu_id = deriveTiuId(name, subjectId);
+  if (byTiu[tiu_id]) return { ok: false, error: already(byTiu[tiu_id], tiu_id) };
+
+  const raw = String(spec.type || '').trim() || (kind === 'control' ? 'control' : '');
   const n = normaliseSampleType(raw);
-  const specimen = n.known && !['assay control', 'control', 'mab'].includes(n.type.toLowerCase());
-  if (specimen) {
-    alert(`“${n.type}” is a specimen type, not a control.\n\n` +
-      `Patient material belongs in the sample manifest. Any control type works here, ` +
-      `including one this tool has not seen before.`);
-    return;
+  const isControlType = CONTROL_TYPE_KEYS.includes((n.type || '').toLowerCase());
+
+  if (kind === 'control') {
+    // The rule the control file follows: a type this build does not know is a
+    // control type it has not been told about, but a recognised specimen type
+    // is patient material and never a control.
+    if (n.known && !isControlType) {
+      return { ok: false, error: `“${n.type}” is a specimen type, not a control.\n\n` +
+        `Patient material belongs in the sample manifest, or add it here as a sample. ` +
+        `Any control type works, including one this tool has not seen before.` };
+    }
+    // A control is identified by name alone on the Lab Plate Maps, so two
+    // controls sharing one is a mistake rather than a thing to warn about.
+    const clash = (byInput[name] || [])[0];
+    if (clash) return { ok: false, error: already(clash, name) };
+  } else {
+    if (isControlType) {
+      return { ok: false, error: `“${n.type}” is a control type.\n\n` +
+        `Switch this entry to Control — a control is stamped into the reserved area, ` +
+        `not placed among the samples.` };
+    }
+    if (!raw) return { ok: false, error: 'Give the sample a type — serum, plasma, whole blood or CSF.' };
   }
 
-  const w = parseInt((wellsEl || {}).value, 10);
+  const w = parseInt(spec.wells, 10);
   const wells = Number.isFinite(w) ? Math.max(0, Math.min(96, w)) : 0;
+  const vol = String(spec.volume === undefined || spec.volume === null ? '' : spec.volume).trim();
 
   const smp = {
     tiu_id, input_id: name,
-    subject_id: '', subject_age_yrs: '', subject_sex: '',
+    subject_id: subjectId, subject_age_yrs: '', subject_sex: '',
     sample_type: n.type, sample_type_detail: n.detail, sample_type_raw: n.raw,
-    volume_mL: '', collection_date: '', cohort: '', num_freeze_thaws: '',
-    diagnosis: '', notes: '', dither_group: '', repeat_across_plates: '',
-    min_volume_required_mL: '', source_rack: '', source_position: '',
-    is_control: true,
+    volume_mL: vol, collection_date: '', cohort: String(spec.cohort || '').trim(),
+    num_freeze_thaws: '', diagnosis: '', notes: '', dither_group: '',
+    repeat_across_plates: '', min_volume_required_mL: '',
+    source_rack: '', source_position: '',
     from_control_file: HAND_ADDED,
-    // Rows past the end of the manifest sheet, so the export can append it there.
+    // Rows past the end of the manifest sheet, so the export can append them.
     rowIdx: samples.reduce((mx, x) => Math.max(mx, x.rowIdx || 0), 0) + 1
   };
+  // Only a control carries the flag: it is what makes an unrecognised type count
+  // as a control downstream, and a sample must never pick it up.
+  if (kind === 'control') smp.is_control = true;
 
   samples = samples.concat([smp]);
   importedControls = importedControls.concat([smp]);
   byTiu[tiu_id] = smp;
   (byInput[name] = byInput[name] || []).push(smp);
   refreshSampleDerived();
-  mutate('control_added', { plate: '(all)', well: '(by hand)', count: 1,
-                            note: `${name} — ${n.type}, ${wells} well(s) per plate` });
+  mutate(kind === 'control' ? 'control_added' : 'sample_added',
+         { plate: '(all)', well: '(by hand)', count: 1,
+           note: `${tiu_id} — ${n.type || 'no type'}` +
+                 (kind === 'control' ? `, ${wells} well(s) per plate` : '') });
 
-  controlTemplate = controlTemplate.concat([{ tiu_id, replicates: wells }]);
-  if (idEl) idEl.value = '';
-  if (wellsEl) wellsEl.value = String(wells || 2);
+  // A sample typed in to fill a free well is placed by hand, and autofill only
+  // ever reaches the four specimen types. Saying so is the difference between a
+  // sample that never gets placed and one someone knows to place.
+  let warning = '';
+  if (kind === 'sample') {
+    if (!isAutofillable(smp)) {
+      warning = `Autofill places serum, plasma, whole blood and CSF. “${n.type}” is not ` +
+        `one of those, so this sample has to be put in a well by hand.`;
+    }
+    const others = (byInput[name] || []).filter(x => x !== smp);
+    if (others.length) {
+      warning = [warning, `Note: ${others.length} other row(s) already use the sample_id ` +
+        `“${name}” — they are told apart by subject_id.`].filter(Boolean).join('\n\n');
+    }
+  }
+  return { ok: true, error: '', warning, sample: smp, wells };
+}
+
+// ── Add by hand, from the Input Samples panel ───────────────────────────────
+// The same entry point for both kinds, because the question "is this a sample
+// or a control" is the one thing the person adding it knows and the tool cannot
+// infer — a lab's own control type looks like any other unrecognised string.
+function handKind() {
+  const el = document.querySelector('input[name="handKind"]:checked');
+  return el && el.value === 'control' ? 'control' : 'sample';
+}
+
+function openHandModal() {
+  if (!samples.length) { alert('Load a manifest first.'); return; }
+  const added = document.getElementById('handAdded');
+  if (added) added.textContent = '';
+  refreshHandOptions();
+  onHandKindChange();
+  document.getElementById('handOverlay').classList.remove('hidden');
+  const id = document.getElementById('handId');
+  if (id) id.focus();
+}
+
+function closeHandModal() {
+  document.getElementById('handOverlay').classList.add('hidden');
+}
+
+// Suggestions taken from the run itself, so a second entry matches the first
+// rather than inventing a near-miss spelling that splits a cohort in two.
+function refreshHandOptions() {
+  const kind = handKind();
+  const types = document.getElementById('handTypeOpts');
+  if (types) {
+    const seen = new Set(kind === 'control'
+      ? ['control', 'assay control', 'mAb']
+      : ['serum', 'plasma', 'whole blood', 'CSF']);
+    samples.filter(x => kind === 'control' ? isAnyControl(x) : !isAnyControl(x))
+      .forEach(x => { if (x.sample_type) seen.add(x.sample_type); });
+    types.innerHTML = [...seen].map(t => `<option value="${escHtml(t)}"></option>`).join('');
+  }
+  const cohorts = document.getElementById('handCohortOpts');
+  if (cohorts) {
+    const seen = [...new Set(samples.map(x => x.cohort).filter(Boolean))];
+    cohorts.innerHTML = seen.map(c => `<option value="${escHtml(c)}"></option>`).join('');
+  }
+}
+
+function onHandKindChange() {
+  const kind = handKind();
+  const wells = document.getElementById('handWellsWrap');
+  if (wells) wells.style.display = kind === 'control' ? '' : 'none';
+  const subject = document.getElementById('handSubjectWrap');
+  if (subject) subject.style.opacity = kind === 'control' ? '.55' : '1';
+  const type = document.getElementById('handType');
+  if (type) type.placeholder = kind === 'control' ? 'control' : 'serum';
+  refreshHandOptions();
+  const note = document.getElementById('handNote');
+  if (note) {
+    note.innerHTML = kind === 'control'
+      ? 'A control is never auto-filled. It is stamped into the reserved control ' +
+        'area, in the order the Control template dialog lists — this adds it there ' +
+        'with the well count given.'
+      : 'Autofill places <strong>serum, plasma, whole blood and CSF</strong>. Any other ' +
+        'type is kept as written, but has to be put into a well by hand — which is ' +
+        'the point when the well was going to stay empty. Subject ID is optional; ' +
+        'with one, the row\u2019s key becomes <code>sample_id_subject_id</code>.';
+  }
+}
+
+function addHandEntry() {
+  const val = id => (document.getElementById(id) || {}).value;
+  const kind = handKind();
+  const res = addPoolEntry({
+    kind,
+    name: val('handId'),
+    subjectId: kind === 'control' ? '' : val('handSubject'),
+    type: val('handType'),
+    cohort: val('handCohort'),
+    volume: val('handVolume'),
+    wells: val('handWells')
+  });
+  if (!res.ok) { alert(res.error); return; }
+
+  if (kind === 'control') {
+    controlTemplate = controlTemplate.concat([{ tiu_id: res.sample.tiu_id, replicates: res.wells }]);
+  } else {
+    // Ready to drop into a well: the reason this row exists is a free well.
+    selectSample(res.sample.tiu_id);
+  }
+
+  const added = document.getElementById('handAdded');
+  if (added) {
+    added.innerHTML = `\u2713 Added <strong>${escHtml(res.sample.tiu_id)}</strong>` +
+      (kind === 'control' ? ` as a control, ${res.wells} well(s) per plate.`
+                          : ` as a sample \u2014 pick a well and assign it.`) +
+      (res.warning ? `<div style="color:#8a6a00;margin-top:4px;">${escHtml(res.warning)}</div>` : '');
+  }
+  ['handId', 'handSubject', 'handVolume'].forEach(id => {
+    const el = document.getElementById(id); if (el) el.value = '';
+  });
+  const idEl = document.getElementById('handId');
   if (idEl) idEl.focus();
+
+  refreshHandOptions();
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  renderPlate();
+  updateStats();
+  if (kind === 'control' && !document.getElementById('controlOverlay').classList.contains('hidden')) {
+    renderControlTemplate();
+  }
+}
+
+function addControlByHand() {
+  const idEl = document.getElementById('ctlNewId');
+  const typeEl = document.getElementById('ctlNewType');
+  const wellsEl = document.getElementById('ctlNewWells');
+  const res = addPoolEntry({
+    kind: 'control',
+    name: (idEl || {}).value,
+    type: (typeEl || {}).value,
+    wells: (wellsEl || {}).value
+  });
+  if (!res.ok) { alert(res.error); return; }
+
+  controlTemplate = controlTemplate.concat([{ tiu_id: res.sample.tiu_id, replicates: res.wells }]);
+  if (idEl) { idEl.value = ''; idEl.focus(); }
   renderControlTemplate();
 }
 
