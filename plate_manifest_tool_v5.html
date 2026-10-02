@@ -2380,7 +2380,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '0f842d5+local changes';
+const DESIGNER_BUILD = 'dfaf639+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -5568,11 +5568,17 @@ function previewAutofill(silent) {
 
   const areaCost = controlAreaCost(res, opts);
   if (areaCost) {
+    // Releasing the area is only free if nothing needs it later. Controls can
+    // arrive after autofill — from a control file, or by hand — and by then the
+    // samples are sitting in the wells they would have used, which is a worse
+    // place to find out.
     notes.push(`<span class="warn">⚠ No control-type samples in this manifest, but the control ` +
       `area is reserving ${areaCost.wells} well(s) across the run. Releasing it would fit this ` +
       `run on <strong>${areaCost.freed} plate(s) instead of ${areaCost.now}</strong>. ` +
-      `Set the control area to “None” — under Control area in the toolbar — if controls are not ` +
-      `being added to these plates by hand.</span>`);
+      `Set the control area to “None” under Control area in the toolbar — but only if no ` +
+      `controls are going on these plates at all. If any are coming later, by hand or from a ` +
+      `control file, keep the area: autofill will otherwise put samples in the wells they need, ` +
+      `and the only way back is to re-run it.</span>`);
   }
 
   notes.push('ℹ Already-assigned wells are preserved and skipped.');
@@ -7209,7 +7215,22 @@ function controlTargetPlates() {
   const scope = (document.getElementById('ctlScope') || {}).value || 'all';
   if (scope === 'current') return [currentPlate];
   if (scope === 'custom') return parsePlateSpec((document.getElementById('ctlPlates') || {}).value);
-  return Array.from({ length: totalPlates }, (_, i) => i + 1);
+  return platesInUse();
+}
+
+// The plates the run actually occupies. A run of 166 samples needs four plates;
+// the other four exist only because the plate count has not been trimmed, and
+// stamping controls onto a plate nobody will ever pick up is pointless. It used
+// to be worse than pointless: "all plates" meant all eight, an empty plate has
+// no control area, and the whole stamp was refused because of plates that are
+// not part of the run.
+//
+// Before anything is placed there is no run yet, so every plate counts —
+// stamping the control area first is a normal way to start.
+function platesInUse() {
+  const all = Array.from({ length: totalPlates }, (_, i) => i + 1);
+  const used = all.filter(p => Object.keys(plateAssignments[p] || {}).length > 0);
+  return used.length ? used : all;
 }
 
 function onControlScopeChange() {
@@ -7889,13 +7910,24 @@ let appliedControlTemplates = [];
 
 // The reserved area's chunks, in the same order autofill would use, so a
 // template lands on whole replicate pairs rather than straddling them.
-function reservedChunks(plateNum, replicates, layout) {
+// Chunks of the control area big enough for one control.
+//
+// With `available`, a chunk holding a sample does not count. Re-stamping over a
+// previous stamp is normal, so a well holding a control is still available —
+// but a well holding a sample is not, and counting it was how the dialog came
+// to say a template fitted and the stamp then offered to overwrite six wells.
+function reservedChunks(plateNum, replicates, layout, available) {
   const slots = getSampleSlots(layout || 'pair-down');
   const reserved = reservedOn(plateNum);
+  const held = available ? (plateAssignments[plateNum] || {}) : {};
+  const free = k => {
+    const a = held[k];
+    return !a || isAnyControl(byTiu[a.tiu_id]);
+  };
   const chunks = [];
   for (let i = 0; i + replicates <= slots.length; i += replicates) {
     const c = slots.slice(i, i + replicates);
-    if (c.every(k => reserved.has(k))) chunks.push(c);
+    if (c.every(k => reserved.has(k) && free(k))) chunks.push(c);
   }
   return chunks;
 }
@@ -7910,11 +7942,22 @@ function planControlTemplate(plateNum, template, rotate, seed) {
   // Chunks are sized by the largest entry so a 2-well control always gets a
   // whole pair; 1-well entries simply use the first well of theirs.
   const size = template.reduce((mx, e) => Math.max(mx, e.replicates || 1), 1);
-  const chunks = reservedChunks(plateNum, size, layout);
-  if (!chunks.length) return { ok: false, reason: `plate ${plateNum} has no reserved area`, wells: [] };
+  const chunks = reservedChunks(plateNum, size, layout, true);
+  if (!chunks.length) {
+    const reserved = reservedOn(plateNum).size;
+    return { ok: false, wells: [], reason: reserved
+      ? `plate ${plateNum} has a control area but samples fill it — clear those wells, ` +
+        `or enlarge the area under Control area`
+      : `plate ${plateNum} has no reserved area — set one under Control area` };
+  }
   if (template.length > chunks.length) {
+    const reserved = reservedOn(plateNum).size;
+    const blocked = reserved - chunks.length * size;
     return { ok: false, wells: [],
-      reason: `plate ${plateNum} has room for ${chunks.length} control(s), the template needs ${template.length}` };
+      reason: `plate ${plateNum} has room for ${chunks.length} control(s) of ${size} well(s), ` +
+        `the template needs ${template.length}` +
+        (blocked > 0 ? ` — ${blocked} well(s) of its control area hold samples` : '') +
+        ` (enlarge the area, use fewer wells each, or re-run autofill with the area reserved)` };
   }
 
   const offset = rotate ? Math.floor(makeRng(hashSeed(`${seed}|ctl|${plateNum}`))() * chunks.length) : 0;
