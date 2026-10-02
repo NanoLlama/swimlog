@@ -1706,13 +1706,14 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         </summary>
         <div class="area-pop" style="min-width:260px;">
           <div style="font-size:11.5px;color:var(--muted);line-height:1.45;">
-            Which of the eight library pools this run uses. Written to the Design Log
-            so a plate map can be matched to its sequencing data.
+            Which of the nine library pools this run uses. Written to the Design Log
+            — numbers, libraries, and what each pool held — so a plate map can be
+            matched to its sequencing data.
           </div>
           <div id="panseqBoxes" style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;"></div>
           <div style="display:flex;gap:8px;align-items:center;">
             <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;"
-                    onclick="setPanSeqAll(true)">All 8</button>
+                    id="panseqAllBtn" onclick="setPanSeqAll(true)">All 9</button>
             <button class="btn btn-ghost" style="padding:4px 10px;font-size:11px;"
                     onclick="setPanSeqAll(false)">None</button>
             <span id="panseqCount" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
@@ -2384,7 +2385,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'a1b6c70+local changes';
+const DESIGNER_BUILD = '46114bf+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -6774,12 +6775,45 @@ function describeSubject(sid) {
 }
 
 // ─── PanSeq library pools ───────────────────────────────────────────────────
-// A PanSeq run uses some subset of the eight library pools. It does not change
+// A PanSeq run uses some subset of the nine library pools. It does not change
 // how wells are laid out, but it is part of what the run *was*, so it belongs
 // in the exported record beside the seed and the version — a plate map that
 // does not say which modules were run cannot be matched to its sequencing data.
-const PANSEQ_POOL_COUNT = 8;
-let panSeqPools = [];                         // sorted pool numbers, 1..8
+//
+// The pool number is the identity; the library is what it holds. Several pools
+// share a library — four of Human, two of VirScan2 + SARS-CoV-2 — so a run is
+// recorded by number and read by library, and both go into the export.
+const PANSEQ_LIBRARIES = {
+  1: 'Human', 2: 'Human', 3: 'Human', 4: 'Human',
+  5: 'VirScan2 + SARS-CoV-2', 6: 'VirScan2 + SARS-CoV-2',
+  7: 'Microbiome', 8: 'ToxScan', 9: 'IEDB'
+};
+const PANSEQ_POOL_COUNT = Object.keys(PANSEQ_LIBRARIES).length;
+let panSeqPools = [];                         // sorted pool numbers, 1..9
+
+function panSeqLibrary(n) { return PANSEQ_LIBRARIES[n] || ''; }
+
+// Chosen pools as runs of adjacent numbers that share a library, so nine
+// checkboxes read back as "1–4 Human · 7 Microbiome" rather than "1, 2, 3, 4, 7".
+function panSeqGroups() {
+  const out = [];
+  panSeqPools.forEach(n => {
+    const last = out[out.length - 1];
+    if (last && last.library === panSeqLibrary(n) && last.pools[last.pools.length - 1] === n - 1) {
+      last.pools.push(n);
+    } else {
+      out.push({ library: panSeqLibrary(n), pools: [n] });
+    }
+  });
+  return out;
+}
+
+function panSeqGroupLabel(g) {
+  const span = g.pools.length === 1 ? `${g.pools[0]}`
+             : g.pools.length === 2 ? `${g.pools[0]}, ${g.pools[1]}`
+             : `${g.pools[0]}\u2013${g.pools[g.pools.length - 1]}`;
+  return `${span} ${g.library}`.trim();
+}
 
 function setPanSeqPools(list) {
   panSeqPools = [...new Set((list || []).map(Number))]
@@ -6791,16 +6825,33 @@ function setPanSeqPools(list) {
 function panSeqLabel() {
   if (!panSeqPools.length) return 'not specified';
   if (panSeqPools.length === PANSEQ_POOL_COUNT) return `all ${PANSEQ_POOL_COUNT}`;
-  return panSeqPools.join(', ');
+  return panSeqGroups().map(panSeqGroupLabel).join(' \u00b7 ');
+}
+
+// Just the numbers, for places where the libraries are listed separately.
+function panSeqNumbers() {
+  return panSeqPools.length ? panSeqPools.join(', ') : '(not specified)';
+}
+
+// The distinct libraries a run covers, in pool order. Four Human pools are one
+// library, which is the question anyone reads this to answer.
+function panSeqLibrariesUsed() {
+  return [...new Set(panSeqPools.map(panSeqLibrary))].filter(Boolean);
 }
 
 function buildPanSeqPicker() {
   const box = document.getElementById('panseqBoxes');
   if (!box || box.childElementCount) return;
   box.innerHTML = Array.from({ length: PANSEQ_POOL_COUNT }, (_, i) => i + 1).map(n =>
-    `<label class="toggle-wrap" style="margin:0;font-size:12px;">
-       <input type="checkbox" data-pool="${n}" onchange="onPanSeqChange()"> Pool ${n}
+    `<label class="toggle-wrap" style="margin:0;font-size:12px;align-items:baseline;"
+            title="Pool ${n} — ${escHtml(panSeqLibrary(n))}">
+       <input type="checkbox" data-pool="${n}" onchange="onPanSeqChange()">
+       <span>Pool ${n}<br>
+         <span style="font-size:10.5px;color:var(--muted);">${escHtml(panSeqLibrary(n))}</span>
+       </span>
      </label>`).join('');
+  const all = document.getElementById('panseqAllBtn');
+  if (all) all.textContent = `All ${PANSEQ_POOL_COUNT}`;
   syncPanSeqPicker();
 }
 
@@ -6847,12 +6898,19 @@ function loadPanSeqPools() {
 
 // Rows for the Design Log, in both the planned and the control-only branch.
 function panSeqRows() {
-  return [
+  const rows = [
     [],
     ['PanSeq library pools'],
-    ['Pools used in this run', panSeqLabel()],
-    ['Pool count', panSeqPools.length || '(not specified)']
+    ['Pools used in this run', panSeqNumbers()],
+    ['Pool count', panSeqPools.length ? `${panSeqPools.length} of ${PANSEQ_POOL_COUNT}`
+                                      : '(not specified)'],
+    ['Libraries covered', panSeqLibrariesUsed().join(', ') || '(not specified)']
   ];
+  // One row per pool, so the record says what each number held at the time of
+  // the run. Pool-to-library assignments change; a plate map that only stored
+  // "pools 1-4" cannot be read back once they do.
+  panSeqPools.forEach(n => rows.push([`Pool ${n}`, panSeqLibrary(n)]));
+  return rows;
 }
 
 function updateStats() {
@@ -9930,7 +9988,7 @@ function buildDesignLogSheet() {
   rows.push(['State schema version', STATE_SCHEMA_VERSION]);
   rows.push(['Template user', currentUser() || '(not recorded)']);
   rows.push(['Source file', originalFileName]);
-  rows.push(['PanSeq library pools', panSeqLabel()]);
+  rows.push(['PanSeq pools', panSeqLabel()]);        // detail follows in its own section
   // Together with the seed, this is what lets a reader confirm they are
   // regenerating from identical inputs with identical code rather than
   // something that merely looks the same.
@@ -10018,6 +10076,10 @@ function buildDesignLogSheet() {
                  f.source, m.volumeChoices[f.tiu_id] || 'proceed']);
     });
   }
+  // The header line above is the one-line reading. This is the record: which
+  // pools, which libraries, and what each pool held — which only the edit-only
+  // branch used to carry, leaving every planned run without it.
+  panSeqRows().forEach(r => rows.push(r));
   controlTemplateRows().forEach(r => rows.push(r));
   bridgeCoverageRows().forEach(r => rows.push(r));
   indexAssignmentRows().forEach(r => rows.push(r));
