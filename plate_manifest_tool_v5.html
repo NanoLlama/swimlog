@@ -2298,8 +2298,12 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       </div>
     </div>
     <div id="ctlFit" style="margin-top:8px;font-size:11px;"></div>
+    <div id="ctlAreaHint" style="margin-top:6px;font-size:11px;color:var(--muted);line-height:1.45;"></div>
     <div class="modal-actions">
       <button class="btn btn-ghost" onclick="closeControlModal()">Cancel</button>
+      <button class="btn btn-ghost" id="ctlSizeBtn" onclick="sizeAreaToTemplate()"
+              title="Reserve exactly the wells this template needs, instead of all of columns 11–12">
+        ⤡ Size the area to this template</button>
       <button class="btn btn-primary" id="ctlApplyBtn" onclick="applyControlTemplate()">Stamp</button>
     </div>
   </div>
@@ -2380,7 +2384,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'dfaf639+local changes';
+const DESIGNER_BUILD = '4e7d2af+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -8215,6 +8219,7 @@ function renderControlTemplate() {
   if (missing.length) problems.push(`not in this manifest: ${missing.join(', ')}`);
 
   apply.disabled = problems.length > 0;
+  updateAreaHint(chosen);
   const wells = chosen.reduce((a, e) => a + e.replicates, 0);
   const where = targets.length === totalPlates ? 'every plate'
               : targets.length === 1 ? `plate ${targets[0]}`
@@ -8267,6 +8272,128 @@ function captureControlTemplate() {
   controlTemplate = seen.map(t => ({ tiu_id: t, replicates: counts[t] }))
     .concat(rest.map(t => ({ tiu_id: t, replicates: 0 })));
   renderControlTemplate();
+}
+
+// ─── Sizing the control area to the template ────────────────────────────────
+// The default area is columns 11 and 12 — sixteen wells a plate — whatever the
+// template actually needs. A five-control template taking two wells each needs
+// ten, and the other six cost real estate that can run to a whole extra plate.
+//
+// Reserving exactly what the template consumes, before autofill runs, is the
+// only order that gets both: autofill then fills around the area instead of
+// through it.
+
+// One chunk per control, every chunk the size of the largest entry — which is
+// exactly what planControlTemplate consumes.
+function templateAreaWells(template) {
+  const chosen = (template || []).filter(e => e.replicates > 0);
+  if (!chosen.length) return 0;
+  const size = chosen.reduce((mx, e) => Math.max(mx, e.replicates || 1), 1);
+  return chosen.length * size;
+}
+
+// The block at the far end of the plate, which is where the control area has
+// always sat. Taking it from the end also keeps it aligned to the chunk stride:
+// the stride divides 96, so 96 − N is a multiple of it whenever N is, and a
+// top-aligned block of three-well chunks would not be.
+function templateAreaWellSet(template, layout) {
+  const need = templateAreaWells(template);
+  if (!need) return null;
+  const slots = getSampleSlots(layout || 'pair-down');
+  if (need > slots.length) return null;
+  return new Set(slots.slice(slots.length - need));
+}
+
+// Plates the samples would need with `areaWells` held back on each.
+function platesForArea(areaWells, replicates) {
+  const per = Math.floor((96 - areaWells) / Math.max(1, replicates));
+  const n = samples.filter(isAutofillable).length;
+  return per > 0 ? Math.ceil(n / per) : Infinity;
+}
+
+// What sizing the area to the template would buy, said before the button is
+// pressed rather than in the confirm after it.
+function updateAreaHint(chosen) {
+  const box = document.getElementById('ctlAreaHint');
+  const btn = document.getElementById('ctlSizeBtn');
+  if (!box) return;
+  const need = templateAreaWells(controlTemplate);
+  if (!need) { box.textContent = ''; if (btn) btn.disabled = true; return; }
+  if (btn) btn.disabled = false;
+  const reps = parseInt((document.getElementById('replicateCount') || {}).value, 10) || 2;
+  const now = platesForArea(16, reps), sized = platesForArea(need, reps);
+  const layout = (document.getElementById('replicateLayout') || {}).value || 'pair-down';
+  const wells = templateAreaWellSet(controlTemplate, layout);
+  const where = wells ? describeWellSet(wells) : '';
+  if (Number.isFinite(now) && Number.isFinite(sized) && sized < now && need < 16) {
+    box.innerHTML = `This template needs <strong>${need}</strong> of the 16 wells the default ` +
+      `area holds. Sizing the area to it (${escHtml(where)}) would fit the samples on ` +
+      `<strong>${sized} plate(s) instead of ${now}</strong> — do it before autofill runs, ` +
+      `or autofill will fill those wells with samples.`;
+  } else if (need < 16) {
+    box.innerHTML = `This template needs <strong>${need}</strong> of the 16 wells the default ` +
+      `area holds. Sizing the area to it (${escHtml(where)}) frees the rest for samples.`;
+  } else {
+    box.textContent = '';
+  }
+}
+
+function sizeAreaToTemplate() {
+  const chosen = controlTemplate.filter(e => e.replicates > 0);
+  if (!chosen.length) { alert('Choose at least one control first — the area is sized to fit them.'); return; }
+  const layout = (document.getElementById('replicateLayout') || {}).value || 'pair-down';
+  const wells = templateAreaWellSet(controlTemplate, layout);
+  if (!wells) { alert('That template does not fit on a plate at all.'); return; }
+
+  const targets = controlTargetPlates();
+  if (!targets.length) { alert('No plates selected.'); return; }
+
+  // Samples already in the proposed area do not move just because it is
+  // reserved; the area has to be set before autofill, not after.
+  const clash = [];
+  targets.forEach(p => wells.forEach(w => {
+    const a = (plateAssignments[p] || {})[w];
+    if (a && !isAnyControl(byTiu[a.tiu_id])) clash.push(`P${p} ${w}`);
+  }));
+
+  const reps = parseInt((document.getElementById('replicateCount') || {}).value, 10) || 2;
+  const before = platesForArea(16, reps), after = platesForArea(wells.size, reps);
+  const saving = Number.isFinite(before) && Number.isFinite(after) && after < before
+    ? `\n\nAt ${reps} replicate(s) this run would need ${after} plate(s) rather than ${before}.`
+    : '';
+
+  let msg = `Reserve ${wells.size} well(s) on plate(s) ${targets.join(', ')} — ` +
+            `${describeWellSet(wells)} — instead of the default 16.${saving}`;
+  if (clash.length) {
+    msg += `\n\n⚠ ${clash.length} of those wells already ` +
+           `${clash.length === 1 ? 'holds a sample' : 'hold samples'}: ` +
+           `${clash.slice(0, 8).join(', ')}${clash.length > 8 ? ', …' : ''}.\n` +
+           `Reserving them does not move those samples. Re-run autofill afterwards ` +
+           `so it fills around the area instead of through it.`;
+  }
+  if (!confirm(msg + '\n\nSet the control area?')) return;
+
+  pushUndo('size control area to template');
+  targets.forEach(p => { plateReserved[p] = new Set(wells); });
+  mutate('control_area_changed', { plate: targets.join(', '), well: '(control area)',
+                                   count: wells.size,
+                                   note: `sized to template — ${wells.size} well(s) per plate` });
+  selectedWells.clear();
+  renderPlate();
+  renderControlTemplate();
+}
+
+// "rows D–H of columns 11–12", or a well list when it is not a clean block.
+function describeWellSet(set) {
+  const list = [...set];
+  const rows = [...new Set(list.map(w => w[0]))].sort();
+  const cols = [...new Set(list.map(w => parseInt(w.slice(1), 10)))].sort((a, b) => a - b);
+  if (rows.length * cols.length === list.length) {
+    const r = rows.length === 1 ? `row ${rows[0]}` : `rows ${rows[0]}–${rows[rows.length - 1]}`;
+    const c = cols.length === 1 ? `column ${cols[0]}` : `columns ${cols[0]}–${cols[cols.length - 1]}`;
+    return `${r} of ${c}`;
+  }
+  return list.slice(0, 10).join(', ') + (list.length > 10 ? ', …' : '');
 }
 
 function applyControlTemplate() {
