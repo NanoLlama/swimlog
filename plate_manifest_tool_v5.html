@@ -1454,7 +1454,11 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
 
   /* ─── Collapsing the sample list ──────────────────────────────────────────
      Reading a labelled plate wants width more than it wants the picking list. */
-  .main-layout.no-left { grid-template-columns: 0 1fr 270px; }
+  /* Two tracks, not three with the first set to 0: display:none takes the left
+     column out of the grid flow entirely, so the plate slid into the 0px track
+     and the right rail took the wide one. The button that promises to widen the
+     plate was collapsing it to 36px. */
+  .main-layout.no-left { grid-template-columns: 1fr 270px; }
   .main-layout.no-left > div:first-child { display: none; }
 
   /* Plate tabs now live inside the toolbar rather than on a row of their own. */
@@ -1565,6 +1569,10 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
    rather than disabling it: a greyed-out row of buttons invites people to ask
    why they cannot use them. */
 body.viewer [data-edit] { display: none !important; }
+/* Not an edit, but nothing a reader can act on: the validator checks a design
+   against the rules the person laying it out has to satisfy, and its findings
+   are for them. The check itself still runs — the badge is simply not shown. */
+body.viewer [data-viewer-hide] { display: none !important; }
 /* The control area and the pool list stay readable — they say what the run is —
    but stop being pickers. */
 body.viewer #areaRow > summary,
@@ -1693,7 +1701,7 @@ body.viewer .viewer-note { display: flex; }
       <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
         <button class="btn btn-ghost" data-edit id="undoBtn" onclick="undo()" disabled title="Nothing to undo">↶ Undo</button>
         <button class="btn btn-ghost" data-edit onclick="clearPlate()">Clear plate</button>
-        <button class="btn btn-validate" id="validateBtn" onclick="openValidation()"
+        <button class="btn btn-validate" id="validateBtn" data-viewer-hide onclick="openValidation()"
                 title="Check the whole design against the rules the bench relies on">
           <span>Validate</span><span class="vbadge hidden" id="validateBadge"></span>
         </button>
@@ -1720,6 +1728,17 @@ body.viewer .viewer-note { display: flex; }
               onclick="openAutofillModal()">⚡ Autofill plates</button>
 
       <div style="margin-left:auto;display:flex;align-items:center;gap:8px;">
+        <span style="color:var(--muted);">Plate</span>
+        <div class="seg" id="zoomSeg" role="group" aria-label="Plate size">
+          <button type="button" data-zoom="1" onclick="setPlateZoom(1)" aria-pressed="true"
+                  title="Fit the whole plate in the window">Fit</button>
+          <button type="button" data-zoom="1.25" onclick="setPlateZoom(1.25)" aria-pressed="false"
+                  title="25% larger than the fit — the page scrolls if it has to">L</button>
+          <button type="button" data-zoom="1.5" onclick="setPlateZoom(1.5)" aria-pressed="false"
+                  title="50% larger than the fit">XL</button>
+          <button type="button" data-zoom="2" onclick="setPlateZoom(2)" aria-pressed="false"
+                  title="Twice the fitted size — for reading one well at a time">2×</button>
+        </div>
         <span style="color:var(--muted);">Text</span>
         <div class="seg size-seg" id="sizeSeg" role="group" aria-label="Text size">
           <button type="button" data-size="compact" onclick="setUiDensity('compact')" title="Compact text">A</button>
@@ -2547,7 +2566,7 @@ function readOnly() {
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'ab81648+local changes';
+const DESIGNER_BUILD = '010e754+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -2655,6 +2674,13 @@ function applyViewerChrome() {
   if (!VIEWER) return;
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
   if (document.body) document.body.classList.add('viewer');
+  const layout = document.querySelector('.main-layout');
+  if (layout && layout.classList) layout.classList.add('no-left');
+  const lt = document.getElementById('leftToggle');
+  if (lt) {
+    lt.setAttribute('aria-pressed', 'true');
+    lt.title = 'Show the sample list';
+  }
   document.title = 'PhIP-Seq Viewer';
   const h1 = document.querySelector('.app-head h1');
   if (h1) h1.textContent = 'PhIP-Seq Viewer';
@@ -2676,6 +2702,7 @@ document.addEventListener('DOMContentLoaded', () => {
   loadUiDensity();
   applyPanelState();
   loadPanSeqPools();
+  loadPlateZoom();
   watchLayout();
   // A menu that stays open after you have clicked past it reads as stuck.
   document.addEventListener('click', ev => {
@@ -5990,7 +6017,11 @@ function placeUserField() {
 }
 
 // Collapse the picking list to give the plate its width back.
-let leftCollapsed = false;
+// The Viewer starts with the sample list folded away and the plate a step above
+// its fitted size: reading one well's detail is the whole job, and the picking
+// list is not part of it. Together that is a 66px well rather than 49px, with no
+// sideways scrolling — the ◧ button brings the list back.
+let leftCollapsed = VIEWER;
 
 function toggleLeftPanel() {
   leftCollapsed = !leftCollapsed;
@@ -6781,6 +6812,44 @@ function groupLabelOf(field) {
 // runs out first sets the size. A floor keeps wells clickable (and above the
 // 24px minimum target size); a ceiling stops a big monitor from producing
 // comic wells.
+// How much bigger than the fitted size to draw the plate. 1 fits the window,
+// which is right when you are laying a run out and want every plate at a glance;
+// reading one well's detail wants the opposite, so the view zooms past the fit
+// and the page scrolls. Not an edit — it changes nothing about the design — so
+// the Viewer keeps the control, and starts a step up because reading is all it
+// is for.
+const PLATE_ZOOMS = [1, 1.25, 1.5, 2];
+let plateZoom = 1;
+
+function setPlateZoom(z) {
+  const near = PLATE_ZOOMS.reduce((best, v) =>
+    Math.abs(v - z) < Math.abs(best - z) ? v : best, PLATE_ZOOMS[0]);
+  plateZoom = near;
+  try { localStorage.setItem('phipseq_plate_zoom', String(near)); } catch (e) { /* private window */ }
+  syncZoomSeg();
+  const grid = document.getElementById('plateGrid');
+  if (grid) grid.dataset.fit = '';              // force a remeasure at the new scale
+  fitPlateToViewport();
+}
+
+function syncZoomSeg() {
+  const seg = document.getElementById('zoomSeg');
+  if (!seg || !seg.querySelectorAll) return;
+  seg.querySelectorAll('button[data-zoom]').forEach(b => {
+    const on = Number(b.dataset.zoom) === plateZoom;
+    b.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
+function loadPlateZoom() {
+  let z = VIEWER ? 1.25 : 1;                    // the Viewer is for reading
+  try {
+    const v = parseFloat(localStorage.getItem('phipseq_plate_zoom'));
+    if (Number.isFinite(v)) z = v;
+  } catch (e) { /* ignore */ }
+  setPlateZoom(z);
+}
+
 const WELL_MIN = 26, WELL_MAX = 62;              // compact, square
 const DWELL_MIN_W = 46, DWELL_MAX_W = 96;        // labelled, wider than tall
 const DWELL_MIN_H = 36, DWELL_MAX_H = 58;
@@ -6872,6 +6941,11 @@ function fitPlateToViewport() {
   } else {
     const side = Math.floor(Math.min(availW / 12, availH / 8));
     w = h = clampNum(side, WELL_MIN, WELL_MAX);
+  }
+
+  if (plateZoom !== 1) {
+    w = Math.round(w * plateZoom);
+    h = Math.round(h * plateZoom);
   }
 
   if (grid.dataset.fit === `${w}|${h}|${gap}`) return;   // nothing to change
@@ -7049,8 +7123,12 @@ function panSeqGroupLabel(g) {
   return `${span} ${g.library}`.trim();
 }
 
+// Not guarded for the Viewer, and deliberately: this is the setter the restore
+// path uses. applyDesignState calls it to put back what the opened file recorded,
+// and loadPanSeqPools to put back what the browser remembered — neither is an
+// edit. Guarding it here made the Viewer report "not specified" for a run whose
+// pools the file plainly listed. The guards belong on the two user actions below.
 function setPanSeqPools(list) {
-  if (readOnly()) return panSeqPools;
   panSeqPools = [...new Set((list || []).map(Number))]
     .filter(n => Number.isInteger(n) && n >= 1 && n <= PANSEQ_POOL_COUNT)
     .sort((a, b) => a - b);
@@ -7102,6 +7180,7 @@ function syncPanSeqPicker() {
 }
 
 function onPanSeqChange() {
+  if (readOnly()) return;
   setPanSeqPools([...document.querySelectorAll('#panseqBoxes input[data-pool]')]
     .filter(el => el.checked).map(el => Number(el.dataset.pool)));
   syncPanSeqPicker();
