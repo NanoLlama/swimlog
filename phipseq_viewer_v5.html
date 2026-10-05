@@ -2536,7 +2536,7 @@ const DESIGNER_VERSION = '5.0.0';
 // the markup carries data-edit on everything that changes a design and CSS
 // removes it, and every entry point that writes state asks readOnly() first. A
 // stale handler, a keyboard shortcut or the console all hit the second layer.
-const VIEWER = false; /* BUILD:VIEWER */
+const VIEWER = true; /* BUILD:VIEWER */
 
 function readOnly() {
   if (!VIEWER) return false;
