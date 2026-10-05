@@ -1598,6 +1598,8 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         <button class="btn btn-primary caret" id="exportCaret" aria-haspopup="true" aria-expanded="false"
                 onclick="toggleExportMenu(event)" title="Other export formats" aria-label="Other export formats">▾</button>
         <div class="export-menu hidden" id="exportMenu" role="menu">
+          <button type="button" role="menuitem" onclick="closeExportMenu(); openNameFixModal();"
+                  title="Find rows sharing a tiu_id and rename them">Check names…</button>
           <button type="button" role="menuitem" onclick="runExport('excel')">Excel manifest
             <small>Lab and Analysis plate maps, design log, diagnostics</small></button>
           <hr>
@@ -2245,6 +2247,28 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
   </div>
 </div>
 
+<div class="autofill-modal-overlay hidden" id="nameFixOverlay">
+  <div class="autofill-modal" style="max-width:760px;">
+    <h2>⚠ Rows sharing a name</h2>
+    <p style="margin-bottom:8px;">
+      <code>tiu_id</code> is what the plate maps, the Sample Instances sheet and the
+      barcode assignment all key on, so it has to be unique. These rows are sharing
+      one — rename all but one of each group and the exports unblock.
+    </p>
+    <p style="margin-bottom:10px;font-size:11.5px;color:var(--muted);line-height:1.5;">
+      Wells, instance uids and bridging are keyed on the name, so the row that keeps it
+      keeps them: <strong>nothing on the plates moves</strong>. Where a name was built
+      from <code>sample_id</code> and <code>subject_id</code>, the sample_id moves with
+      it, so the exported row still matches its own formula.
+    </p>
+    <div id="nameFixBody" style="max-height:46vh;overflow:auto;margin:6px 0;"></div>
+    <div class="modal-actions" style="margin-top:12px;">
+      <button class="btn btn-ghost" onclick="closeNameFixModal()">Close</button>
+      <button class="btn btn-primary" onclick="applyNameFixes()">Rename and unblock</button>
+    </div>
+  </div>
+</div>
+
 <div class="autofill-modal-overlay hidden" id="handOverlay">
   <div class="autofill-modal" style="max-width:560px;">
     <h2>✎ Add by hand</h2>
@@ -2478,7 +2502,7 @@ const DESIGNER_VERSION = '5.0.0';
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = 'c3f4a1d+local changes';
+const DESIGNER_BUILD = '29f355b+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -3044,6 +3068,19 @@ function rowToSample(row, colIdx, rowIdx) {
   };
 }
 
+// byTiu and byInput are built from `samples`, and anything that changes a row's
+// identity has to rebuild them — refreshSampleDerived does not, which is why a
+// renamed row stayed unreachable under its new name while the old key still
+// pointed at it.
+function reindexPool() {
+  byTiu = {};
+  byInput = {};
+  samples.forEach(s => {
+    byTiu[s.tiu_id] = s;
+    (byInput[s.input_id] = byInput[s.input_id] || []).push(s);
+  });
+}
+
 function deriveTiuId(sampleId, subjectId) {
   const a = String(sampleId || '').trim();
   const b = String(subjectId || '').trim();
@@ -3146,12 +3183,7 @@ function loadSamples() {
   });
   reportUnknownTypes(unknownTypes);
 
-  byTiu = {};
-  byInput = {};
-  samples.forEach(s => {
-    byTiu[s.tiu_id] = s;
-    (byInput[s.input_id] = byInput[s.input_id] || []).push(s);
-  });
+  reindexPool();
 
   // Detect true duplicates: same input_id AND same sample_type
   duplicateIds.clear();
@@ -5936,12 +5968,40 @@ function closeExportMenu() {
   if (c) c.setAttribute('aria-expanded', 'false');
 }
 
+// Returns whether the export was actually started, so the name gate in front of
+// it can be tested for every format rather than only the one the manifest uses.
 function runExport(kind) {
   closeExportMenu();
+  if (!exportNameCheck()) return false;
   if (kind === 'excel') downloadExcel();
   else if (kind === 'wellmap') downloadWellMapCsv();
   else if (kind === 'worklist') downloadWorklistCsv();
   else if (kind === 'gwl') downloadTecanGwl();
+  return true;
+}
+
+// Last gate before anything leaves the tool. Loading a manifest already refuses
+// duplicate tiu_ids, but rows join the pool afterwards too, and a collision made
+// then is silent — so it is caught here, where it would otherwise be written
+// into files that outlive the session.
+//
+// Not a confirm: unlike thin bridging, there is no run this is right for. Two
+// rows under one name cannot be told apart in the plate maps or the barcode
+// assignment, so the export is stopped and the fix offered instead.
+function exportNameCheck() {
+  const hits = nameCollisions();
+  if (!hits.length) return true;
+  const rows = hits.reduce((a, h) => a + h.rows.length, 0);
+  const detail = hits.slice(0, 6).map(h =>
+    `  ${h.tiu_id} — ${h.rows.map(sourceOf).join(', ')}`).join('\n');
+  const fix = confirm(
+    `Cannot export: ${hits.length} tiu_id value(s) are held by ${rows} rows.\n\n` +
+    `tiu_id is what the plate maps, the Sample Instances sheet and the barcode ` +
+    `assignment all key on, so two rows sharing one cannot be told apart afterwards.\n\n` +
+    `${detail}${hits.length > 6 ? `\n  …and ${hits.length - 6} more` : ''}\n\n` +
+    `Open the rename dialog to fix them now? Nothing on the plates moves.`);
+  if (fix) openNameFixModal();
+  return false;
 }
 
 // The count on the Validate button. validateLayout() walks every well, so on a
@@ -8274,7 +8334,13 @@ function importControlWorkbook(wb, fileName) {
       smp.is_control = true;
       out.byDeclaration.push(`${smp.input_id || smp.tiu_id}${n.type ? ` (${n.type})` : ''}`);
     }
-    if (byTiu[smp.tiu_id]) { out.skippedDuplicate.push(smp.tiu_id); continue; }
+    // Against the pool *and* against the rows taken from this same file. Checking
+    // only the pool let a file carrying its own duplicates merge every one of
+    // them: byTiu kept the last, the earlier rows stayed in the sample list
+    // unreachable, and the template got an entry for each.
+    if (byTiu[smp.tiu_id] || fresh.some(f => f.tiu_id === smp.tiu_id)) {
+      out.skippedDuplicate.push(smp.tiu_id); continue;
+    }
     smp.from_control_file = fileName || 'control file';
     const row = data[i] || [];
     const wells = wellsCol >= 0 ? parseInt(row[wellsCol], 10) : NaN;
@@ -8341,6 +8407,172 @@ function importControlWorkbook(wb, fileName) {
 // It joins the pool exactly as an imported control does — same merge, same
 // export row, same removal — so nothing downstream has to know which way it
 // arrived; only the note on the exported row says so.
+// ─── Name collisions ────────────────────────────────────────────────────────
+// tiu_id is the primary key everything resolves through: plate maps, Sample
+// Instances, barcode assignment. Loading a manifest refuses duplicates outright,
+// but rows join the pool after that too — a control file, a row typed in — and
+// a collision made there is silent: byTiu keeps whichever row was merged last
+// and the other becomes unreachable while still sitting in the sample list.
+//
+// So the pool is checked again on the way out, where the damage would become
+// permanent. Rows, not ids: the point is to say which rows are fighting over a
+// name, so the right one can be renamed.
+function nameCollisions() {
+  const byId = {};
+  samples.forEach(s => { (byId[s.tiu_id] = byId[s.tiu_id] || []).push(s); });
+  return Object.keys(byId).filter(t => byId[t].length > 1).sort()
+    .map(t => ({ tiu_id: t, rows: byId[t] }));
+}
+
+// Where a row came from, for telling two rows with one name apart.
+function sourceOf(s) {
+  return s.from_control_file === HAND_ADDED ? 'typed in here'
+       : s.from_control_file ? `control file ${s.from_control_file}`
+       : `manifest row ${s.rowIdx}`;
+}
+
+// A free name near the one it replaces, so a renamed row still sorts beside its
+// twin and is recognisable on a plate map.
+function suggestUniqueTiu(base, taken) {
+  let n = 2;
+  while (taken.has(`${base}_${n}`)) n++;
+  return `${base}_${n}`;
+}
+
+// Renaming keeps tiu_id derivable where it already was. On template v5 the id is
+// sample_id + "_" + subject_id, so changing only the id would leave the exported
+// row contradicting its own formula; the sample_id moves with it instead.
+// Returns what it actually changed, because the two cases are not the same edit.
+function renameSample(s, newTiu) {
+  const want = String(newTiu || '').trim();
+  if (!s || !want) return { ok: false, error: 'Give the row a name.' };
+  if (want === s.tiu_id) return { ok: true, changed: false };
+  if (byTiu[want] && byTiu[want] !== s) {
+    return { ok: false, error: `“${want}” is taken by another row.` };
+  }
+
+  const wasDerived = s.tiu_id === deriveTiuId(s.input_id, s.subject_id);
+  const suffix = s.subject_id ? `_${s.subject_id}` : '';
+  let movedId = false;
+  if (wasDerived && (!suffix || want.endsWith(suffix))) {
+    s.input_id = suffix ? want.slice(0, want.length - suffix.length) : want;
+    movedId = true;
+  }
+  const old = s.tiu_id;
+  s.tiu_id = want;
+  reindexPool();
+  mutate('renamed', { plate: '(all)', well: '(name)', count: 1,
+                      note: `${old} → ${want}${movedId ? ` (${idHeader} moved with it)` : ''}` });
+  return { ok: true, changed: true, movedId, old };
+}
+
+function openNameFixModal() {
+  const hits = nameCollisions();
+  if (!hits.length) { alert('Every row has its own tiu_id — nothing to fix.'); return; }
+  renderNameFix();
+  document.getElementById('nameFixOverlay').classList.remove('hidden');
+}
+
+function closeNameFixModal() {
+  document.getElementById('nameFixOverlay').classList.add('hidden');
+}
+
+function renderNameFix() {
+  const hits = nameCollisions();
+  const box = document.getElementById('nameFixBody');
+  if (!box) return;
+  if (!hits.length) {
+    box.innerHTML = '<div style="color:#2d7d46;font-weight:600;">✓ Every row has its own ' +
+                    'tiu_id. Exports are unblocked.</div>';
+    return;
+  }
+  const taken = new Set(samples.map(x => x.tiu_id));
+  box.innerHTML = hits.map(h => {
+    // One row keeps the name. Wells, instance uids and bridging are all keyed on
+    // it, so the keeper carries them and nothing has to be moved — which is why
+    // the rename is offered per row rather than renaming the whole group.
+    const rows = h.rows.map((s, i) => {
+      const keep = i === 0;
+      // The best suggestion is usually the name the row should already have had:
+      // its own sample_id and subject_id. When that is free it repairs the row
+      // rather than papering over it; otherwise fall back to a free suffix.
+      const own = deriveTiuId(s.input_id, s.subject_id);
+      const suggestion = keep ? s.tiu_id
+        : (own && !taken.has(own)) ? own
+        : suggestUniqueTiu(s.subject_id && s.tiu_id.endsWith(`_${s.subject_id}`)
+            ? s.input_id : s.tiu_id, taken);
+      if (!keep) taken.add(suggestion);
+      return `<tr>
+        <td style="white-space:nowrap;">${keep
+          ? '<span style="color:var(--muted);">keeps the name</span>'
+          : '<span style="color:#b84040;font-weight:600;">rename</span>'}</td>
+        <td>${escHtml(s.input_id)}${s.subject_id ? ` · ${escHtml(s.subject_id)}` : ''}
+            <div style="font-size:9px;color:var(--muted);">${escHtml(s.sample_type || 'no type')}
+              · ${escHtml(sourceOf(s))}</div></td>
+        <td>${keep ? `<code>${escHtml(s.tiu_id)}</code>`
+          : `<input type="text" data-fix-row="${s.rowIdx}" value="${escHtml(suggestion)}"
+                    style="width:190px;font-size:11px;">`}</td>
+      </tr>`;
+    }).join('');
+    return `<div style="margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:600;margin-bottom:4px;">
+        <code>${escHtml(h.tiu_id)}</code> — ${h.rows.length} rows</div>
+      <table class="balance-table" style="width:100%;">
+        <tr><th style="width:110px;">Action</th><th>Row</th><th style="width:210px;">tiu_id</th></tr>
+        ${rows}
+      </table></div>`;
+  }).join('');
+}
+
+// The rules, with no DOM in them: every new name is checked against the pool and
+// against the others in the same batch before anything is written, so a rejected
+// set cannot leave the pool half-renamed.
+function applyRenames(pairs) {
+  const byRow = {};
+  samples.forEach(s => { byRow[s.rowIdx] = s; });
+
+  const wanted = [], seen = new Set(samples.map(s => s.tiu_id));
+  for (const pr of pairs || []) {
+    const s = pr.sample || byRow[pr.rowIdx];
+    if (!s) continue;
+    const want = String(pr.name || '').trim();
+    if (!want) return { ok: false, error: 'Every renamed row needs a name.' };
+    if (want === s.tiu_id) continue;
+    if (seen.has(want) || wanted.some(w => w.want === want)) {
+      return { ok: false, error: `“${want}” is taken by another row. Pick a different name.` };
+    }
+    wanted.push({ s, want });
+  }
+  if (!wanted.length) return { ok: false, error: 'Nothing was changed.' };
+
+  pushUndo(`rename ${wanted.length} row(s)`);
+  let moved = 0;
+  for (const { s, want } of wanted) {
+    const r = renameSample(s, want);
+    if (!r.ok) return { ok: false, error: r.error };
+    if (r.movedId) moved++;
+  }
+  refreshSampleDerived();
+  return { ok: true, renamed: wanted.length, moved };
+}
+
+function applyNameFixes() {
+  const pairs = [...document.querySelectorAll('#nameFixBody input[data-fix-row]')]
+    .map(el => ({ rowIdx: el.dataset.fixRow, name: el.value }));
+  const r = applyRenames(pairs);
+  if (!r.ok) { alert(r.error); return; }
+
+  renderNameFix();
+  renderSampleList(document.getElementById('sampleSearch').value.toLowerCase());
+  renderPlate();
+  updateStats();
+  alert(`Renamed ${r.renamed} row(s)` +
+    (r.moved ? `, and moved ${idHeader} with ${r.moved} of them so the exported tiu_id still ` +
+               `matches sample_id and subject_id.` : '.') +
+    `\n\nWells already assigned keep the name they were given, so they stay with the ` +
+    `row that kept it.`);
+}
+
 const HAND_ADDED = '(added by hand)';
 
 const CONTROL_TYPE_KEYS = ['assay control', 'control', 'mab'];
@@ -9337,6 +9569,19 @@ function validateLayout() {
   const errors = [], warnings = [], notes = [];
   const add = (list, title, wells, detail) =>
     list.push({ title, wells: wells || [], detail: detail || '' });
+
+  // Reported here as well as at the export gate, so it is visible while there is
+  // still a design to change rather than only at the moment of leaving.
+  const collisions = nameCollisions();
+  if (collisions.length) {
+    add(errors, `${collisions.length} tiu_id value(s) held by more than one row`, [],
+      collisions.slice(0, 6).map(h => `${h.tiu_id} — ${h.rows.map(sourceOf).join(', ')}`)
+        .join(' · ') +
+      (collisions.length > 6 ? ` …and ${collisions.length - 6} more` : '') +
+      '. tiu_id is the key the plate maps, Sample Instances and barcode assignment ' +
+      'resolve through, so exports are blocked until each row has its own. Use ' +
+      'Rename under the export menu — nothing on the plates moves.');
+  }
 
   const wellsOf = {};                       // tiu -> [{plate, well}]
   const badKeys = [], inLocked = [], ctrlOutside = [], sampleInArea = [];
