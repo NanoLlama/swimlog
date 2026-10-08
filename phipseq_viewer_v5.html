@@ -2033,6 +2033,7 @@ body.viewer .viewer-note { display: flex; }
               <select id="layoutMode" onchange="onLayoutModeChange(); autofillOptionChanged();">
                 <option value="dither">Dither groups across plates</option>
                 <option value="block">Block fill (v3 behaviour)</option>
+                <option value="asprovided">As provided — manifest order, plate by plate</option>
               </select>
               <span class="hint" id="layoutModeHint"></span>
             </div>
@@ -2566,7 +2567,7 @@ function readOnly() {
 // Replaced with the commit the file was built from by tools/build.js. A version
 // number says which release; this says which code, which is what someone
 // re-running a design a year later actually needs.
-const DESIGNER_BUILD = '010e754+local changes';
+const DESIGNER_BUILD = '5bd3cbb+local changes';
 // Deliberately unchanged at the 5.0 release: the designer's interface was
 // rebuilt, but the shape of a saved design was not, so a v5 state file still
 // opens in v4 and vice versa. Bump this only when the saved shape changes.
@@ -4892,7 +4893,23 @@ function readAutofillOptions() {
   };
 }
 
+// Samples pre-aliquoted into plates by the investigator cannot be redistributed:
+// the tubes are already in an order nobody can change without re-racking them.
+// This mode mirrors that order instead of improving on it, so the choices that
+// only make sense when the tool decides where a sample goes are not quietly
+// applied on top — they are overridden here, and the dialog greys them out.
+function normaliseForMode(opts) {
+  if (opts.mode !== 'asprovided') return opts;
+  return Object.assign({}, opts, {
+    keepSubjectTogether: false,   // manifest order already fixes the arrangement
+    sampleOrder: 'sequential',    // a shuffle is the one thing this mode must not do
+    wellOrder: 'sequential',      // wells in slot order; no blocks, no scatter
+    partitionByType: false        // splitting types across plates would re-order them
+  });
+}
+
 function computeAutofillPlan(opts) {
+  opts = normaliseForMode(opts);
   const rng = makeRng(opts.seed);
   const assignedTiuIds = getAssignedTiuIds();
 
@@ -5263,6 +5280,26 @@ function computeAutofillPlan(opts) {
     } else {
       dealAcross(platePool, bridging, groupNames, groupUnits);
     }
+  } else if (opts.mode === 'asprovided') {
+    // Straight down the manifest: first sample to last, wells in slot order,
+    // a plate filled before the next is opened. The reserved control area is
+    // already excluded — buildFreeChunks never returns a reserved well — so the
+    // sequence steps over it and carries on, which is what "allow for the
+    // control area" means when the tubes themselves cannot move.
+    //
+    // No stratification is attempted, and that is the point rather than an
+    // omission: whatever balance the manifest order happens to give is the
+    // balance the run gets. The preview says so, and the drift figures still
+    // report it, because an investigator's plate order is not usually random.
+    const inOrder = units.slice().sort((a, b) =>
+      (a.order - b.order) || String(a.label).localeCompare(String(b.label)));
+    let idx = 0;
+    inOrder.forEach(u => {
+      while (idx < platePool.length &&
+             capacity[platePool[idx]] - used[platePool[idx]] < u.samples.length) idx++;
+      if (idx >= platePool.length) { unplaced.push(u); return; }
+      placeUnit(platePool[idx], u);
+    });
   } else {
     // Block mode — v3 behaviour: cohorts form contiguous blocks, filled in
     // order, largest cohort first so the ≤10 single-plate rule still packs well
@@ -5493,12 +5530,29 @@ function onWellOrderChange() {
 }
 
 function onLayoutModeChange() {
-  const dither = document.getElementById('layoutMode').value === 'dither';
+  const mode = document.getElementById('layoutMode').value;
+  const dither = mode === 'dither';
+  const asProvided = mode === 'asprovided';
   document.getElementById('ditherWindowField').style.opacity = dither ? '1' : '0.45';
   document.getElementById('ditherWindow').disabled = !dither;
-  document.getElementById('layoutModeHint').textContent = dither
-    ? 'Each block of N consecutive plates receives a proportional share of every group.'
+  document.getElementById('layoutModeHint').textContent =
+      dither ? 'Each block of N consecutive plates receives a proportional share of every group.'
+    : asProvided ? 'Samples are placed in manifest order, first to last, stepping over the ' +
+                   'reserved control area. Nothing is redistributed — for plates the ' +
+                   'investigator has already aliquoted.'
     : 'Groups are packed into contiguous plate blocks (v3 behaviour).';
+
+  // The controls this mode overrides are greyed rather than hidden, so it is
+  // visible that they exist and are not being applied — a setting that silently
+  // stops working is worse than one that is plainly off.
+  [['groupByField', true], ['wellOrder', true], ['sampleOrder', true],
+   ['keepSubjectTogether', true], ['partitionByType', true]].forEach(([id]) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.disabled = asProvided;
+    const field = el.closest ? el.closest('.dither-field') : null;
+    if (field) field.style.opacity = asProvided ? '0.45' : '1';
+  });
 }
 
 // Offered straight from the preview: adding plates and re-planning in one step,
@@ -5642,7 +5696,10 @@ function controlAreaCost(res, opts) {
 }
 
 function previewAutofill(silent) {
-  const opts = readAutofillOptions();
+  // Normalised up front, so every line of the preview describes the run that
+  // would actually happen. Reading the raw form here had the header announcing
+  // "wells: grouped in column blocks" for a mode that overrides exactly that.
+  const opts = normaliseForMode(readAutofillOptions());
   // The pre-flight is shown once per set of rules, before the first preview
   // that would be affected by it — not on every click, and never on the live
   // recompute that follows a keystroke.
@@ -5675,7 +5732,11 @@ function previewAutofill(silent) {
   const wellsPer = opts.replicates;
   const head = [];
   head.push(`<strong>${res.sampleCount}</strong> sample(s) in <strong>${res.unitCount}</strong> unit(s) → <strong>${res.platesUsed.length}</strong> plate(s)`);
-  head.push(`Mode: <strong>${opts.mode === 'dither' ? `dither across ${res.effectiveWindow} plate(s)` : 'block fill'}</strong> · Group by: <strong>${escHtml(groupLabel)}</strong>`);
+  const modeLabel = opts.mode === 'dither' ? `dither across ${res.effectiveWindow} plate(s)`
+                  : opts.mode === 'asprovided' ? 'as provided — manifest order'
+                  : 'block fill';
+  head.push(`Mode: <strong>${modeLabel}</strong>` +
+    (opts.mode === 'asprovided' ? '' : ` · Group by: <strong>${escHtml(groupLabel)}</strong>`));
   const wellOrderLabel = { grouped: 'grouped in column blocks',
                            'grouped-random': 'grouped, blocks shuffled per plate',
                            'grouped-balanced': 'grouped, edge-balanced',
@@ -5776,6 +5837,20 @@ function previewAutofill(silent) {
     notes.push(`<span class="warn">⚠ Volume pre-flight: ${parts.join(', ')}.</span> ` +
       `<button class="btn btn-ghost" style="padding:2px 10px;font-size:11px;" ` +
       `onclick="openVolumeDialog(${opts.replicates})">Review</button>`);
+  }
+  if (opts.mode === 'asprovided') {
+    notes.push(`ℹ <strong>As provided:</strong> samples are in manifest order, first to last, ` +
+      `stepping over the reserved control area. <strong>Nothing is stratified</strong> — whatever ` +
+      `balance the manifest order gives is the balance this run gets, and the figures above ` +
+      `measure it rather than fix it. An investigator's plate order is rarely random, so read ` +
+      `the drift before accepting.`);
+    const split = racksSplitAcrossPlates(res);
+    if (split.length) {
+      notes.push(`<span class="warn">⚠ ${split.length} source rack(s) do not fit on one plate: ` +
+        `${escHtml(split.map(r => `${r.rack} → plates ${r.plates.join(', ')}`).join(' · '))}.</span> ` +
+        `A 96-tube rack cannot land whole on a plate that reserves wells for controls. Release ` +
+        `the control area to keep each rack together, or accept the split.`);
+    }
   }
   if (opts.mode === 'dither' && opts.windowSize > res.effectiveWindow) {
     notes.push(`ℹ Dither window reduced to ${res.effectiveWindow} — the run only needs ${res.effectiveWindow} plate(s) at this sample count.`);
@@ -8293,6 +8368,24 @@ function minBridgesRequired() {
 
 // The plan's own assignments, merged with what is already on the plates, which
 // is what the run will actually look like once it is applied.
+// Source racks that the run had to break across destination plates. Only
+// meaningful for the as-provided mode, where the racks are the physical thing
+// being mirrored: a 96-tube rack cannot land whole on a plate that reserves
+// sixteen wells for controls, and nobody should find that out at the bench.
+function racksSplitAcrossPlates(res) {
+  const byRack = {};
+  Object.entries(res.plan || {}).forEach(([p, wells]) => {
+    Object.values(wells).forEach(a => {
+      const rack = String((byTiu[a.tiu_id] || {}).source_rack || '').trim();
+      if (!rack) return;
+      (byRack[rack] = byRack[rack] || new Set()).add(Number(p));
+    });
+  });
+  return Object.entries(byRack)
+    .filter(([, plates]) => plates.size > 1)
+    .map(([rack, plates]) => ({ rack, plates: [...plates].sort((a, b) => a - b) }));
+}
+
 function coverageForPlan(res) {
   const merged = {};
   for (let p = 1; p <= totalPlates; p++) {
@@ -10784,7 +10877,9 @@ function buildDesignLogSheet() {
   rows.push(['Edits logged in total', changeLog.length]);
   rows.push([]);
   rows.push(['Parameter', 'Value']);
-  rows.push(['Layout mode', o.mode === 'dither' ? 'Dither groups across plates' : 'Block fill']);
+  rows.push(['Layout mode', o.mode === 'dither' ? 'Dither groups across plates'
+                          : o.mode === 'asprovided' ? 'As provided — manifest order, plate by plate'
+                          : 'Block fill']);
   rows.push(['Dither window (plates)', o.mode === 'dither' ? m.effectiveWindow : 'n/a']);
   rows.push(['Group / stratify by', groupLabel]);
   rows.push(['Replicates per sample', o.replicates]);
